@@ -1,0 +1,34 @@
+image: docker:latest
+
+before_script:
+  - docker info
+
+services:
+  - docker:dind
+
+build:
+  stage: build
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker build -t $CI_REGISTRY/vinid223/gcloudstorage-docker/gcloud-storage-backup:latest .
+    - docker push $CI_REGISTRY/vinid223/gcloudstorage-docker/gcloud-storage-backup:latest
+
+.deploy:
+  only:
+    - master
+
+deploy_gitlab:
+  stage: deploy
+  extends:
+    - .deploy
+  script: 
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker push $CI_REGISTRY/vinid223/gcloudstorage-docker/gcloud-storage-backup:latest
+
+deploy_dockerhub:
+  stage: deploy
+  extends:
+    - .deploy
+  script:
+    - docker login -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PASSWORD
+    - docker push vinid223/gcloud-storage-backup:latest
