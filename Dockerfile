@@ -1,6 +1,8 @@
 FROM ubuntu:latest
 MAINTAINER vinid223@gmail.com
 
+ENV DEBIAN_FRONTEND="noninteractive" HOME="/root" LC_ALL="C.UTF-8" LANG="en_US.UTF-8" LANGUAGE="en_US.UTF-8"
+
 RUN apt-get update && apt-get -y install cron curl gnupg2 apt-utils
 
 # Run the command on container startup
@@ -13,6 +15,8 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.c
 RUN mkdir -p /data
 
 ADD run.sh /
+
+RUN chmod u+x /run.sh
 
 ENTRYPOINT ["/run.sh"]
 CMD ["start"]
