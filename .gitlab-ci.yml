@@ -9,9 +9,14 @@ services:
 build:
   stage: build
   script:
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
     - docker build -t $CI_REGISTRY/vinid223/gcloudstorage-docker/gcloud-storage-backup:latest .
-    - docker push $CI_REGISTRY/vinid223/gcloudstorage-docker/gcloud-storage-backup:latest
+    
+build:
+  stage: build
+  only:
+    - master
+  script:
+    - docker build -t vinid223/gcloud-storage-backup:latest .
 
 .deploy:
   only:
