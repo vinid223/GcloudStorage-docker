@@ -6,12 +6,12 @@ before_script:
 services:
   - docker:dind
 
-build:
+build_gitlab:
   stage: build
   script:
     - docker build -t $CI_REGISTRY/vinid223/gcloudstorage-docker/gcloud-storage-backup:latest .
     
-build:
+build_docker_hub:
   stage: build
   only:
     - master
