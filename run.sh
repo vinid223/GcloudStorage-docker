@@ -8,7 +8,7 @@ OPTION="$1"
 ACCESS_KEY=${ACCESS_KEY:?"ACCESS_KEY required"}
 SECRET_KEY=${SECRET_KEY:?"SECRET_KEY required"}
 GCSPATH=${GCSPATH:?"GCSPATH required"}
-GCSOPTIONS=${GCSOPTIONS:" "}
+GCSOPTIONS=${GCSOPTIONS}
 CRON_SCHEDULE=${CRON_SCHEDULE:-0 * * * *}
 
 LOCKFILE="/tmp/gcloudlock.lock"
@@ -39,6 +39,7 @@ if [[ $OPTION = "start" ]]; then
   CRONENV="$CRONENV SECRET_KEY=$SECRET_KEY"
   CRONENV="$CRONENV GCSPATH=$GCSPATH"
   CRONENV="$CRONENV GCSOPTIONS=$GCSOPTIONS"
+  CRONENV="$CRONENV HOME=/root"
   echo "$CRON_SCHEDULE root $CRONENV bash /run.sh backup" >> $CRONFILE
 
   echo "Starting CRON scheduler: $(date)"
@@ -56,7 +57,7 @@ elif [[ $OPTION = "backup" ]]; then
   fi
 
   echo "Executing gsutil sync /data/ $GCSPATH..." | tee -a $LOG
-  gsutil -m rsync -r $GCSOPTIONS /data/ $GCSPATH | tee -a $LOG
+  gsutil -m rsync -r $GCSOPTIONS /data $GCSPATH | tee -a $LOG
   rm -f $LOCKFILE
   echo "Finished sync: $(date)" | tee -a $LOG
 
