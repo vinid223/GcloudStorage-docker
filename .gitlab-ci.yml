@@ -14,7 +14,7 @@ build:
     - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
 
 deploy_tag:
-  stage: push
+  stage: deploy
   variables:
       GIT_STRATEGY: none
   only:
@@ -28,7 +28,7 @@ deploy_tag:
     - docker push vinid223/gcloud-storage-backup:$CI_COMMIT_REF_NAME
 
 deploy_latest:
-  stage: push
+  stage: deploy
   variables:
       GIT_STRATEGY: none
   only:
