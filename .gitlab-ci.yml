@@ -6,34 +6,37 @@ before_script:
 services:
   - docker:dind
 
-build_gitlab:
+build:
   stage: build
   script:
-    - docker build -t $CI_REGISTRY/vinid223/gcloudstorage-docker/gcloud-storage-backup:latest .
-    
-build_docker_hub:
-  stage: build
+    - docker pull $CI_REGISTRY_IMAGE:latest || true
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+
+deploy_tag:
+  stage: push
+  variables:
+      GIT_STRATEGY: none
   only:
-    - master
+    - tags
   script:
-    - docker build -t vinid223/gcloud-storage-backup:latest .
+    - docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME
+    - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_NAME vinid223/gcloud-storage-backup:$CI_COMMIT_REF_NAME
+    - docker login -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PASSWORD
+    - docker push vinid223/gcloud-storage-backup:$CI_COMMIT_REF_NAME
 
-.deploy:
+deploy_latest:
+  stage: push
+  variables:
+      GIT_STRATEGY: none
   only:
-    - master
-
-deploy_gitlab:
-  stage: deploy
-  extends:
-    - .deploy
-  script: 
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
-    - docker push $CI_REGISTRY/vinid223/gcloudstorage-docker/gcloud-storage-backup:latest
-
-deploy_dockerhub:
-  stage: deploy
-  extends:
-    - .deploy
+    - tags
   script:
+    - docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE:latest
+    - docker push $CI_REGISTRY_IMAGE:latest
+    - docker tag $CI_REGISTRY_IMAGE:latest vinid223/gcloud-storage-backup:latest
     - docker login -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PASSWORD
     - docker push vinid223/gcloud-storage-backup:latest
