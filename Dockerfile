@@ -1,7 +1,7 @@
 FROM ubuntu:latest
 MAINTAINER vinid223@gmail.com
 
-RUN apt-get update && apt-get -y install cron
+RUN apt-get update && apt-get -y install cron curl
 
 # Run the command on container startup
 CMD cron && tail -f /var/log/cron.log
