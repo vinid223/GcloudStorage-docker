@@ -2,6 +2,9 @@
 
 Note : This repository is maintained on a private Gitlab server and is replicated in realtime on github.
 
+Github repository : https://github.com/vinid223/GcloudStorage-docker
+Docker Hub : https://hub.docker.com/r/vinid223/gcloud-storage-backup
+
 gcloud-storage-docker is a Docker container which backs up one or more folders to Google Cloud Storage using the GUtils tool.
 
 To tell gcloud-storage-docker what to back up, mount your desired volumes under the `/data` directory.
