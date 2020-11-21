@@ -12,7 +12,6 @@ RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] http://packages.c
 # Create folder for data backup
 RUN mkdir -p /data
 
-ADD boto.cfg /root/.boto
 ADD run.sh /
 
 ENTRYPOINT ["/run.sh"]

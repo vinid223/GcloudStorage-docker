@@ -5,17 +5,14 @@ set -o errexit
 set -o pipefail
 
 OPTION="$1"
-ACCESS_KEY=${ACCESS_KEY:?"ACCESS_KEY required"}
-SECRET_KEY=${SECRET_KEY:?"SECRET_KEY required"}
-S3PATH=${S3PATH:?"S3_PATH required"}
+SERVICE_ACCOUNT=${SERVICE_ACCOUNT:?"SERVICE_ACCOUNT required"}
+KEY_FILE_JSON=${KEY_FILE_JSON:?"KEY_FILE_JSON required"}
+GCSPATH=${GCSPATH:?"GCSPATH required"}
 CRON_SCHEDULE=${CRON_SCHEDULE:-0 * * * *}
-S3CMDPARAMS=${S3CMDPARAMS}
 
-LOCKFILE="/tmp/s3cmd.lock"
+LOCKFILE="/tmp/gcloudlock.lock"
 LOG="/var/log/cron.log"
-
-echo "access_key=$ACCESS_KEY" >> /root/.s3cfg
-echo "secret_key=$SECRET_KEY" >> /root/.s3cfg
+KEYFILE="/tmp/keyfile"
 
 trap "rm -f $LOCKFILE" EXIT
 
@@ -24,19 +21,22 @@ if [ ! -e $LOG ]; then
 fi
 
 if [[ $OPTION = "start" ]]; then
-  CRONFILE="/etc/cron.d/s3backup"
+  CRONFILE="/etc/cron.d/gcloud_backup"
   CRONENV=""
 
   echo "Found the following files and directores mounted under /data:"
   echo
   ls -F /data
   echo
+  
+  ls -F /data > ./inputFiles
+
+  # https://cloud.google.com/sdk/docs/authorizing
 
   echo "Adding CRON schedule: $CRON_SCHEDULE"
-  CRONENV="$CRONENV ACCESS_KEY=$ACCESS_KEY"
-  CRONENV="$CRONENV SECRET_KEY=$SECRET_KEY"
-  CRONENV="$CRONENV S3PATH=$S3PATH"
-  CRONENV="$CRONENV S3CMDPARAMS=\"$S3CMDPARAMS\""
+  CRONENV="$CRONENV SERVICE_ACCOUNT=$SERVICE_ACCOUNT"
+  CRONENV="$CRONENV KEY_FILE_JSON=$KEY_FILE_JSON"
+  CRONENV="$CRONENV GCSPATH=$GCSPATH"
   echo "$CRON_SCHEDULE root $CRONENV bash /run.sh backup" >> $CRONFILE
 
   echo "Starting CRON scheduler: $(date)"
@@ -53,8 +53,9 @@ elif [[ $OPTION = "backup" ]]; then
     touch $LOCKFILE
   fi
 
-  echo "Executing s3cmd sync $S3CMDPARAMS /data/ $S3PATH..." | tee -a $LOG
-  /usr/local/bin/s3cmd sync $S3CMDPARAMS /data/ $S3PATH 2>&1 | tee -a $LOG
+  echo "Executing gsutil sync /data/ $GCSPATH..." | tee -a $LOG
+  gcloud auth activate-service-account $SERVICE_ACCOUNT --key-file=$KEYFILE | tee -a $LOG
+  cat inputFiles | gsutil -m cp -r -I $GCSPATH | tee -a $LOG
   rm -f $LOCKFILE
   echo "Finished sync: $(date)" | tee -a $LOG
 
