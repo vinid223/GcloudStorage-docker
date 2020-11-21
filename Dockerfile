@@ -14,6 +14,8 @@ RUN mkdir -p /data
 ADD run.sh /
 ADD boto.config /root/.boto
 
+RUN chmod +x /run.sh
+
 ENTRYPOINT ["/run.sh"]
 
 CMD ["start"]
