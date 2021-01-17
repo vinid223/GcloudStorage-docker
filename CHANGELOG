@@ -1,3 +1,8 @@
+# V1.1.5
+# 2021-01-17
+Updated Ubuntu base image
+Updated Google Cloud SDK installation
+
 # V1.1.4
 # 2020-11-22
 Fixed an issue with TimeZone not working properly
