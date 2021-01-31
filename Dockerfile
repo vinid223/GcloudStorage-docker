@@ -1,5 +1,4 @@
-# Stick to ubuntu groovy for now
-FROM ubuntu:groovy
+FROM debian:jessie
 LABEL AUTHOR="vinid223@gmail.com"
 
 ENV DEBIAN_FRONTEND="noninteractive" HOME="/root" LC_ALL="C.UTF-8" LANG="en_US.UTF-8" LANGUAGE="en_US.UTF-8"
