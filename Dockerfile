@@ -8,7 +8,7 @@ RUN apt-get update && apt-get -y install cron curl gnupg2 tzdata
 # Installing Google Cloud SDK
 RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" |  tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
 RUN  apt-get install apt-transport-https ca-certificates gnupg -y
-RUN curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+RUN curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
 RUN  apt-get update -y &&  apt-get install google-cloud-sdk -y
       
 RUN apt-get autoremove -y  && apt-get clean -y && rm -rf /var/lib/apt/lists/*
