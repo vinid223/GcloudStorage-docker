@@ -1,7 +1,7 @@
 FROM debian:jessie
 LABEL AUTHOR="vinid223@gmail.com"
 
-ENV DEBIAN_FRONTEND="noninteractive" HOME="/root" LC_ALL="C.UTF-8" LANG="en_US.UTF-8" LANGUAGE="en_US.UTF-8"
+ENV DEBIAN_FRONTEND="noninteractive" HOME="/root" LC_ALL="C.UTF-8" LANG="en_US.UTF-8" LANGUAGE="en_US.UTF-8" CLOUDSDK_PYTHON="python2.7"
 
 RUN apt-get update && apt-get -y install cron curl gnupg2 tzdata python python-magic python-pip
 
