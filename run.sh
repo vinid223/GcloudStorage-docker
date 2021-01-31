@@ -58,7 +58,7 @@ elif [[ $OPTION = "backup" ]]; then
   fi
 
   echo "Executing gsutil sync /data/ $GCSPATH..." | tee -a $LOG
-  gsutil -m rsync -r $GCSOPTIONS /data $GCSPATH | tee -a $LOG
+  CLOUDSDK_PYTHON="python" gsutil -m rsync -r $GCSOPTIONS /data $GCSPATH | tee -a $LOG
   rm -f $LOCKFILE
   echo "Finished sync: $(date)" | tee -a $LOG
 
