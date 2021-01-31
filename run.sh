@@ -30,6 +30,7 @@ if [[ $OPTION = "start" ]]; then
         echo "No Timezone (TZ) define in the ENV"
   else
         echo "Timezone define in the ENV. Setting the system timezone"
+        echo "Timezone to use $TZ"
         echo $TZ > /etc/timezone
         export DEBCONF_NONINTERACTIVE_SEEN=true DEBIAN_FRONTEND=noninteractive
         dpkg-reconfigure tzdata
