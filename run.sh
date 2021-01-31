@@ -24,6 +24,17 @@ if [ ! -e $LOG ]; then
 fi
 
 if [[ $OPTION = "start" ]]; then
+
+  if [ -z "$TZ" ]
+  then
+        echo "No Timezone (TZ) define in the ENV"
+  else
+        echo "Timezone define in the ENV. Setting the system timezone"
+        echo $TZ > /etc/timezone
+        export DEBCONF_NONINTERACTIVE_SEEN=true DEBIAN_FRONTEND=noninteractive
+        dpkg-reconfigure tzdata
+  fi
+
   CRONFILE="/etc/cron.d/gcloud_backup"
   CRONENV=""
 
@@ -40,6 +51,7 @@ if [[ $OPTION = "start" ]]; then
   CRONENV="$CRONENV GCSPATH=$GCSPATH"
   CRONENV="$CRONENV GCSOPTIONS=$GCSOPTIONS"
   CRONENV="$CRONENV HOME=/root"
+  rm -f $CRONFILE # Remove CRONFILE on start to avoid multiple inserts in the file
   echo "$CRON_SCHEDULE root $CRONENV bash /run.sh backup" >> $CRONFILE
 
   echo "Starting CRON scheduler: $(date)"
