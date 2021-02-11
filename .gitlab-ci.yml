@@ -11,11 +11,26 @@ build:
   script:
     - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
     - docker pull $CI_REGISTRY_IMAGE:latest || true
-    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
+    - docker build --no-cache -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA .
     - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+
+deploy_schedule_tag:
+  stage: deploy
+  needs: ["build"]
+  rules:
+    - if: '$CUSTOM_TAG != null'
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker pull $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA $CI_REGISTRY_IMAGE:$CUSTOM_TAG
+    - docker push $CI_REGISTRY_IMAGE:$CUSTOM_TAG
+    - docker tag $CI_REGISTRY_IMAGE:$CUSTOM_TAG vinid223/gcloud-storage-backup:$CUSTOM_TAG
+    - docker login -u $DOCKER_HUB_USERNAME -p $DOCKER_HUB_PASSWORD
+    - docker push vinid223/gcloud-storage-backup:$CUSTOM_TAG
 
 deploy_tag:
   stage: deploy
+  needs: ["build"]
   variables:
       GIT_STRATEGY: none
   only:
@@ -31,6 +46,7 @@ deploy_tag:
 
 deploy_latest:
   stage: deploy
+  needs: ["build"]
   variables:
       GIT_STRATEGY: none
   only:
