@@ -17,6 +17,8 @@ build:
 deploy_schedule_tag:
   stage: deploy
   needs: ["build"]
+  tags:
+    - $CUSTOM_TAG
   rules:
     - if: '$CUSTOM_TAG != null'
   script:
