@@ -5,6 +5,7 @@ set -o errexit
 set -o pipefail
 
 OPTION="$1"
+BOTO_FILE=${BOTO_FILE:-"NULL"}
 ACCESS_KEY=${ACCESS_KEY:?"ACCESS_KEY required"}
 SECRET_KEY=${SECRET_KEY:?"SECRET_KEY required"}
 GCSPATH=${GCSPATH:?"GCSPATH required"}
@@ -14,8 +15,15 @@ CRON_SCHEDULE=${CRON_SCHEDULE:-0 * * * *}
 LOCKFILE="/tmp/gcloudlock.lock"
 LOG="/var/log/cron.log"
 
-sed -i "s/replace_gs_access_key_id/$ACCESS_KEY/g" /root/.boto
-sed -i "s/replace_gs_secret_access_key/$SECRET_KEY/g" /root/.boto
+if [[ $BOTO_FILE = "NULL" ]]; then
+  echo "Configuring ACCESS KEYS"
+  sed -i "s/replace_gs_access_key_id/$ACCESS_KEY/g" /root/.boto
+  sed -i "s/replace_gs_secret_access_key/$SECRET_KEY/g" /root/.boto
+else
+  echo "Copy $BOTO_FILE to /root/.boto"
+  cp $BOTO_FILE /root/.boto
+fi
+
 
 trap "rm -f $LOCKFILE" EXIT
 
