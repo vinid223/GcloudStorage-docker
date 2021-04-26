@@ -44,5 +44,45 @@ docker run -d -v /home/user/Documents:/data/documents \
 2. Under `Service account HMAC`, click on a service account if one exists or create a new one by clicking on `CREATE A KEY FOR ANOTHER SERVICE ACCOUNT`
 3. Click on `CREATE A KEY` and you should see your Access Key and Secret Key
 
+## Use local file for Google Cloud config
+
+If you want to avoid using Environement variables for security reasons, you can pass a file to the container. 
+
+Create a local file and add the following:
+
+```
+[Credentials]
+gs_access_key_id=YOURACCESSKEY
+gs_secret_access_key=YOURSECRETKEY
+
+[Boto]
+
+[GoogleCompute]
+
+[GSUtil]
+content_language = en
+default_api_version = 2
+
+[OAuth2]
+```
+
+load it in the container (via volumes) and add a `BOTO_FILE` environement variable with the PATH of the file you mounted. 
+This will completely ignore `ACCESS_KEY` and `SECRET_KEY`
+
+### Example invocation
+
+```
+docker run -d -v /home/user/Documents:/data/documents \ 
+              -v /home/user/Photos:/data/photos \ 
+              -v boto_local:/root/boto.tmp \ 
+              -e "ACCESS_KEY=USELESS" \ 
+              -e "SECRET_KEY=USELESS" \ 
+              -e "BOTO_FILE=/root/boto.tmp" \ 
+              -e "GCSPATH=gs://yourgsbucket/" \ 
+              -e "GCSOPTIONS=-d" \ 
+              -e "CRON_SCHEDULE=0 3 * * *" \ 
+              vinid223/gcloud-storage-docker 
+```
+
 ## Inspiration
 https://github.com/joch/docker-s3backup
