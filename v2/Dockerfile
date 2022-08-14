@@ -10,7 +10,7 @@ RUN curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cl
 
 RUN tar -xf google-cloud-cli-396.0.0-linux-x86_64.tar.gz
 
-RUN ./google-cloud-sdk/install.sh
+RUN ./google-cloud-sdk/install.sh --usage-reporting false -q
 
 RUN rm google-cloud-cli-396.0.0-linux-x86_64.tar.gz
 

@@ -12,8 +12,8 @@ To tell gcloud-storage-docker what to back up, mount your desired volumes under 
 gcloud-storage-docker is configured by setting the following environment variables during
 the launch of the container.
 
-- ACCESS_KEY - your GCP access key for a service account
-- SECRET_KEY - your GCP secret key for a service account
+- ACCESS_KEY - your GCP access key for a service account. The string should not contains the character `|`.
+- SECRET_KEY - your GCP secret key for a service account. The string should not contains the character `|`
 - GCSPATH - your GCS bucket and path (ex: gs://personal-backup-bucket/)
 - GCSOPTIONS - custom parameters to gsutil. (ex: "-d" to have a exact copy of the local files (delete on the bucket files that don't exists anymore) )
 
