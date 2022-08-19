@@ -17,6 +17,7 @@ RUN rm google-cloud-cli-396.0.0-linux-x86_64.tar.gz
 RUN mkdir -p /data
 
 ADD run.sh /opt
+ADD boto.config /root/.boto
 
 RUN chmod +x /opt/run.sh
 
