@@ -1,10 +1,17 @@
-# V1.2
+# V1.3
 
 # 2022-08-18
 
 - Changed base image from ubuntu to alpine
 - Fix and rework the logging system (previously barely working)
 - Updated the handling of the ACCESS_KEY and SECRET_KEY variable while configuring the boto.config file
+
+# V1.2
+
+# 2021-04-26
+
+- Added capability to pass a BOTO file
+- Added more documentation
 
 # V1.1.7
 # 2021-01-27
