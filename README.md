@@ -16,6 +16,7 @@ the launch of the container.
 - SECRET_KEY - your GCP secret key for a service account. The string should not contains the character `|`
 - GCSPATH - your GCS bucket and path (ex: gs://personal-backup-bucket/)
 - GCSOPTIONS - custom parameters to gsutil. (ex: "-d" to have a exact copy of the local files (delete on the bucket files that don't exists anymore) )
+- BOTO_FILE - user generated configuration file containing the access_key, secret_key and your own configurations. This setting ignore ACCESS_KEY and SECRET_KEY. See below for more detail.
 
 Files are by default backed up once every hour. You can customize this behavior
 using an environment variable which uses the standard CRON notation.
@@ -74,10 +75,8 @@ This will completely ignore `ACCESS_KEY` and `SECRET_KEY`
 ```
 docker run -d -v /home/user/Documents:/data/documents \ 
               -v /home/user/Photos:/data/photos \ 
-              -v boto_local:/root/boto.tmp \ 
-              -e "ACCESS_KEY=USELESS" \ 
-              -e "SECRET_KEY=USELESS" \ 
-              -e "BOTO_FILE=/root/boto.tmp" \ 
+              -v /path/to/local/boto/file:/tmp/boto.tmp \ 
+              -e "BOTO_FILE=/tmp/boto.tmp" \ 
               -e "GCSPATH=gs://yourgsbucket/" \ 
               -e "GCSOPTIONS=-d" \ 
               -e "CRON_SCHEDULE=0 3 * * *" \ 
