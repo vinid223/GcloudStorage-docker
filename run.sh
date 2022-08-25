@@ -1,76 +1,89 @@
 #!/bin/bash
 
-# Set sane bash defaults
-set -o errexit
-set -o pipefail
-
+# Parameters
 OPTION="$1"
 BOTO_FILE=${BOTO_FILE:-"NULL"}
-ACCESS_KEY=${ACCESS_KEY:?"ACCESS_KEY required"}
-SECRET_KEY=${SECRET_KEY:?"SECRET_KEY required"}
+ACCESS_KEY=${ACCESS_KEY:-"NULL"}
+SECRET_KEY=${SECRET_KEY:-"NULL"}
 GCSPATH=${GCSPATH:?"GCSPATH required"}
 GCSOPTIONS=${GCSOPTIONS}
 CRON_SCHEDULE=${CRON_SCHEDULE:-0 * * * *}
 
+# Internal variables
 LOCKFILE="/tmp/gcloudlock.lock"
 LOG="/var/log/cron.log"
 
-if [[ $BOTO_FILE = "NULL" ]]; then
-  echo "Configuring ACCESS KEYS"
-  sed -i "s/replace_gs_access_key_id/$ACCESS_KEY/g" /root/.boto
-  sed -i "s/replace_gs_secret_access_key/$SECRET_KEY/g" /root/.boto
-else
-  echo "Copy $BOTO_FILE to /root/.boto"
-  cp $BOTO_FILE /root/.boto
-fi
-
-
-trap "rm -f $LOCKFILE" EXIT
-
+# Create logfile if does not exists
 if [ ! -e $LOG ]; then
-  touch $LOG
+    touch $LOG
 fi
 
-if [[ $OPTION = "start" ]]; then
+# Functions definition
+log_info()
+{
+    INPUT=$1
+    echo "$INPUT" >> $LOG
+}
 
-  CRONFILE="/etc/cron.d/gcloud_backup"
+
+# Welcome
+echo "Welcome to Google Cloud Storage Docker"
+echo "A backup utility to GCP Bucket"
+
+if [[ $OPTION = "setup" ]]; then
+
+  CRONFILE="/etc/crontabs/root"
   CRONENV=""
 
+  if [[ $BOTO_FILE = "NULL" ]]; then
+    if [[ $ACCESS_KEY = "NULL" ]] || [[ $SECRET_KEY = "NULL" ]]; then
+      echo "ACCESS_KEY and SECRET_KEY must have a value when BOTO_FILE is not set"
+      echo "Exiting"
+      exit 1
+    fi
+
+    echo "Configuring ACCESS KEYS"
+    sed -i "s|replace_gs_access_key_id|$ACCESS_KEY|g" /root/.boto
+    sed -i "s|replace_gs_secret_access_key|$SECRET_KEY|g" /root/.boto
+  else
+    echo "Copy $BOTO_FILE to /root/.boto"
+    cp $BOTO_FILE /root/.boto
+  fi
+
   echo "Found the following files and directores mounted under /data:"
-  echo
+  echo ""
   ls -F /data
-  echo
-  
-  # https://cloud.google.com/sdk/docs/authorizing
+  echo ""
 
   echo "Adding CRON schedule: $CRON_SCHEDULE"
-  CRONENV="$CRONENV ACCESS_KEY=$ACCESS_KEY"
-  CRONENV="$CRONENV SECRET_KEY=$SECRET_KEY"
-  CRONENV="$CRONENV GCSPATH=$GCSPATH"
-  CRONENV="$CRONENV GCSOPTIONS=\"$GCSOPTIONS\""
-  rm -f $CRONFILE # Remove CRONFILE on start to avoid multiple inserts in the file
-  echo "$CRON_SCHEDULE root $CRONENV bash /run.sh backup" >> $CRONFILE
 
+  rm -f $CRONFILE
+  rm -f $LOCKFILE
+
+  CRONENV="$CRONENV GCSPATH=\"$GCSPATH\""
+  CRONENV="$CRONENV GCSOPTIONS=\"$GCSOPTIONS\""
+  echo "$CRON_SCHEDULE $CRONENV sh /opt/run.sh backup" >> $CRONFILE
   echo "Starting CRON scheduler: $(date)"
-  cron
-  exec tail -f $LOG 2> /dev/null
+  cat $CRONFILE
+  crond
+  exec tail -f $LOG >> /proc/1/fd/1
 
 elif [[ $OPTION = "backup" ]]; then
-  echo "Starting sync: $(date)" | tee $LOG
+  log_info "Starting sync: $(date)"
 
   if [ -f $LOCKFILE ]; then
-    echo "$LOCKFILE detected, exiting! Already running?" | tee -a $LOG
+    log_info "$LOCKFILE detected, exiting! Already running?"
     exit 1
   else
     touch $LOCKFILE
   fi
 
-  echo "Executing gsutil sync /data/ $GCSPATH..." | tee -a $LOG
-  CLOUDSDK_PYTHON="python" gsutil -m rsync -r $GCSOPTIONS /data $GCSPATH | tee -a $LOG
+  log_info "Executing gsutil sync /data/ $GCSPATH..."
+  CLOUDSDK_PYTHON="python3" sh /google-cloud-sdk/bin/gsutil -m rsync -r $GCSOPTIONS /data $GCSPATH >> $LOG 2>&1
   rm -f $LOCKFILE
-  echo "Finished sync: $(date)" | tee -a $LOG
-
+  log_info "Finished sync: $(date)"
 else
-  echo "Unsupported option: $OPTION" | tee -a $LOG
+  log_info "Unsupported option: $OPTION"
+  log_info "See documentation on available options."
   exit 1
 fi
