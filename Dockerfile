@@ -1,26 +1,26 @@
-FROM debian:jessie
+FROM alpine:3
 LABEL AUTHOR="vinid223@gmail.com"
 
-ENV DEBIAN_FRONTEND="noninteractive" HOME="/root" LC_ALL="C.UTF-8" LANG="en_US.UTF-8" LANGUAGE="en_US.UTF-8" CLOUDSDK_PYTHON="python2.7"
+RUN apk add --no-cache python3 curl
 
-RUN apt-get update && apt-get -y install cron curl gnupg2 tzdata python python-magic python-pip
+RUN curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-396.0.0-linux-x86_64.tar.gz
 
-# Installing Google Cloud SDK
-RUN echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" |  tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
-RUN apt-get install apt-transport-https ca-certificates gnupg -y
-RUN curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
-RUN apt-get update -y &&  apt-get install google-cloud-sdk -y
-      
-RUN apt-get autoremove -y  && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+# ARM
+# RUN curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-396.0.0-linux-arm.tar.gz
 
-# Create folder for data backup
+RUN tar -xf google-cloud-cli-396.0.0-linux-x86_64.tar.gz
+
+RUN ./google-cloud-sdk/install.sh --usage-reporting false -q
+
+RUN rm google-cloud-cli-396.0.0-linux-x86_64.tar.gz
+
 RUN mkdir -p /data
 
-ADD run.sh /
+ADD run.sh /opt
 ADD boto.config /root/.boto
 
-RUN chmod +x /run.sh
+RUN chmod +x /opt/run.sh
 
-ENTRYPOINT ["/run.sh"]
+ENTRYPOINT [ "sh", "/opt/run.sh" ]
 
-CMD ["start"]
+CMD ["setup"]
