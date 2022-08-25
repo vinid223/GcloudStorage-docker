@@ -1,39 +1,63 @@
+# V1.3
+
+# 2022-08-18
+
+- Changed base image from ubuntu to alpine
+- Fix and rework the logging system (previously barely working)
+- Updated the handling of the ACCESS_KEY and SECRET_KEY variable while configuring the boto.config file
+
+# V1.2
+
+# 2021-04-26
+
+- Added capability to pass a BOTO file
+- Added more documentation
+
 # V1.1.7
 # 2021-01-27
-Updated packaged
-Fixed issue with TimeZone
+
+- Updated packaged
+- Fixed issue with TimeZone
 
 # V1.1.6
 # 2021-01-27
-Remove the crontab file on startup instead of happend to the existing file. 
+
+- Remove the crontab file on startup instead of happend to the existing file. 
 
 # V1.1.5
 # 2021-01-17
-Updated Ubuntu base image
-Updated Google Cloud SDK installation
+
+- Updated Ubuntu base image
+- Updated Google Cloud SDK installation
 
 # V1.1.4
 # 2020-11-22
-Fixed an issue with TimeZone not working properly
+
+- Fixed an issue with TimeZone not working properly
 
 # V1.1.3
 # 2020-11-22
-Used a specific tag for the Ubuntu image for a better stability in the future
-Added a cleanup phase to remove unused packages
+
+- Used a specific tag for the Ubuntu image for a better stability in the future
+- Added a cleanup phase to remove unused packages
 
 # V1.1.2
 # 2020-11-21
-Fixed env for home in cron and default GCSOPTIONS value
+
+- Fixed env for home in cron and default GCSOPTIONS value
 
 # V1.1.1
 # 2020-11-21
-Fixed default value for GCSOPTIONS
+
+- Fixed default value for GCSOPTIONS
 
 # V1.1
 # 2020-11-21
-Fixed permissions for image entrypoint
+
+- Fixed permissions for image entrypoint
 
 # V1.0
 # 2020-11-21
-Initial Release
+
+- Initial Release
 
