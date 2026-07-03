@@ -27,6 +27,12 @@ concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
 
+# The built-in GITHUB_TOKEN needs package write scope to push to the Forgejo
+# container registry; without this it fails with `unauthorized: reqPackageAccess`.
+permissions:
+  contents: read
+  packages: write
+
 env:
   REGISTRY: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}
   # Forgejo registry image, e.g. forge.vinid223.ca/vinid223/gcloudstorage-docker
@@ -49,8 +55,7 @@ jobs:
 
       - uses: actions/checkout@v6
 
-      # Build once, tagged with the commit sha. On pull_request we stop here —
-      # this validates the Dockerfile without pushing (no credentials needed).
+      # Build once, tagged with the commit sha. Publish steps below retag it.
       - name: Build image
         run: docker build -t "${IMAGE}:${{ github.sha }}" .
 
@@ -63,10 +68,20 @@ jobs:
             --severity HIGH,CRITICAL --ignore-unfixed --no-progress --exit-code 0 \
             "${IMAGE}:${{ github.sha }}"
 
-      # ---- everything below only runs off pull requests (push / tags / manual) ----
+      # ---- publish steps ----
+      # Every event pushes to the Forgejo registry, so log in on all events
+      # (pull requests now publish a pr-<number> tag; see below).
       - name: Log in to Forgejo registry
-        if: github.event_name != 'pull_request'
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin
+
+      # On a pull request, publish a throwaway :pr-<number> tag so the built
+      # image can be pulled/tested for that PR. Overwritten on each new push.
+      - name: Push :pr-<number> to Forgejo registry (pull request)
+        if: github.event_name == 'pull_request'
+        run: |
+          pr="pr-${{ github.event.number }}"
+          docker tag "${IMAGE}:${{ github.sha }}" "${IMAGE}:${pr}"
+          docker push "${IMAGE}:${pr}"
 
       - name: Push :<sha> to Forgejo registry
         if: github.event_name != 'pull_request'

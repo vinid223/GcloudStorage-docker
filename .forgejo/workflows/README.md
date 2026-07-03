@@ -12,7 +12,7 @@ Single `build` job, running in the **`docker:cli`** container:
 
 | Event | Behaviour |
 |-------|-----------|
-| `pull_request` | **Build only** — `docker build` validates the Dockerfile. No login, no push, no credentials needed. |
+| `pull_request` | Build + push `:pr-<number>` to the Forgejo container registry (throwaway tag for testing the PR image). |
 | `push` to `master` | Build + push `:<sha>` to the Forgejo container registry. |
 | git tag | Build + push `:<tag>` and `:latest` to **both** the Forgejo registry and Docker Hub (`vinid223/gcloud-storage-backup`). |
 | manual (`workflow_dispatch`) | Build + push `:<custom_tag>` to the registry and Docker Hub. |
@@ -28,9 +28,10 @@ This collapses the old GitLab `build` / `deploy_tag` / `deploy_latest` /
   node inside the container.
 
 ## Required secrets / variables
-Needed only for publishing (not for PR builds):
-- Secrets: `GITHUB_TOKEN` (auto-provided, Forgejo registry), `DOCKER_HUB_USERNAME`, `DOCKER_HUB_PASSWORD` (Docker Hub — a Hub access token is recommended over a password).
+- Secrets: `GITHUB_TOKEN` (auto-provided, Forgejo registry — the workflow grants it `packages: write`), `DOCKER_HUB_USERNAME`, `DOCKER_HUB_PASSWORD` (Docker Hub — a Hub access token is recommended over a password; needed only for tag/manual publishes).
 - Variables: `REGISTRY` (defaults to `forge.vinid223.ca`).
+
+> **`unauthorized: reqPackageAccess`?** The Forgejo container registry rejected the login because the token lacked package write scope. The workflow-level `permissions: packages: write` block fixes this. If it persists on your Forgejo version, replace `secrets.GITHUB_TOKEN` in the Forgejo login step with a Personal Access Token (scope `write:package`) stored as a secret.
 
 ## Optimizations & conventions
 - **Concurrency:** a newer push to a ref cancels the in-progress run (tags are unique, so releases are never cancelled).
