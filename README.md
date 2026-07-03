@@ -1,6 +1,6 @@
 # gcloud-storage-docker
 
-Note : This repository is maintained on a private Gitlab server and is replicated in realtime on github.
+Note : This repository is maintained on a private Forgejo server (CI/CD via Forgejo Actions — see [`.forgejo/workflows/README.md`](.forgejo/workflows/README.md)) and is replicated in realtime on github.
 
 Github repository : https://github.com/vinid223/GcloudStorage-docker
 Docker Hub : https://hub.docker.com/r/vinid223/gcloud-storage-backup

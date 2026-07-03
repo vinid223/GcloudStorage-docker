@@ -1,0 +1,98 @@
+# Build & publish Docker image
+# Converted from .gitlab-ci.yml (build / deploy_tag / deploy_latest /
+# deploy_schedule_tag). Pushes to the Forgejo container registry AND Docker Hub.
+#
+# The Forgejo runner has no in-job Docker CLI, but the host Docker socket is
+# auto-mounted into job containers. So the job runs in the `docker:cli` image
+# (which ships the docker client) and talks to that daemon directly — the
+# equivalent of GitLab's docker:dind setup. Node is apk-installed first because
+# Forgejo executes JS actions (checkout) with node inside the job container.
+name: Docker
+
+on:
+  push:
+    branches: [master]
+    tags: ['*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      custom_tag:
+        description: "Extra tag to publish (replaces GitLab scheduled CUSTOM_TAG)"
+        required: true
+
+# Cancel an in-progress run when a newer commit is pushed to the same ref.
+# (Tags are unique refs, so tag/release runs are never cancelled.)
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}
+  # Forgejo registry image, e.g. forge.vinid223.ca/vinid223/gcloudstorage-docker
+  IMAGE: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}/${{ github.repository }}
+  DOCKERHUB_IMAGE: vinid223/gcloud-storage-backup
+
+jobs:
+  build:
+    runs-on: linux-amd64
+    container:
+      image: docker:cli
+    env:
+      DOCKER_BUILDKIT: "1"  # faster, cache-friendly builds (host daemon keeps a layer cache)
+    # The image downloads the ~150 MB Google Cloud CLI and installs it; on a
+    # slow runner this can take a while, so give the job plenty of room.
+    timeout-minutes: 60
+    steps:
+      - name: Bootstrap node (checkout is a JS action)
+        run: apk add --no-cache nodejs
+
+      - uses: actions/checkout@v6
+
+      # Build once, tagged with the commit sha. On pull_request we stop here —
+      # this validates the Dockerfile without pushing (no credentials needed).
+      - name: Build image
+        run: docker build -t "${IMAGE}:${{ github.sha }}" .
+
+      # Scan the locally-built image for vulnerabilities. Non-blocking
+      # (--exit-code 0) — flip to 1 to fail the build on HIGH/CRITICAL findings.
+      - name: Scan image for vulnerabilities (Trivy)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image --scanners vuln \
+            --severity HIGH,CRITICAL --ignore-unfixed --no-progress --exit-code 0 \
+            "${IMAGE}:${{ github.sha }}"
+
+      # ---- everything below only runs off pull requests (push / tags / manual) ----
+      - name: Log in to Forgejo registry
+        if: github.event_name != 'pull_request'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin
+
+      - name: Push :<sha> to Forgejo registry
+        if: github.event_name != 'pull_request'
+        run: docker push "${IMAGE}:${{ github.sha }}"
+
+      - name: Log in to Docker Hub
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        run: echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
+
+      # deploy_tag + deploy_latest (GitLab `only: tags`): publish :<tag> and
+      # :latest to both the Forgejo registry and Docker Hub.
+      - name: Publish tag + latest (on git tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          ref="${{ github.ref_name }}"
+          for t in "${IMAGE}:${ref}" "${IMAGE}:latest" "${DOCKERHUB_IMAGE}:${ref}" "${DOCKERHUB_IMAGE}:latest"; do
+            docker tag "${IMAGE}:${{ github.sha }}" "$t"
+            docker push "$t"
+          done
+
+      # deploy_schedule_tag (GitLab `$CUSTOM_TAG`): manual run with a custom tag.
+      - name: Publish custom tag (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          ct="${{ inputs.custom_tag }}"
+          for t in "${IMAGE}:${ct}" "${DOCKERHUB_IMAGE}:${ct}"; do
+            docker tag "${IMAGE}:${{ github.sha }}" "$t"
+            docker push "$t"
+          done
