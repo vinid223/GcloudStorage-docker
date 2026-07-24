@@ -1,9 +1,10 @@
 # CI/CD — Forgejo Actions
 
 This project's pipeline runs on **Forgejo Actions** (migrated from GitLab CI).
-One workflow: `docker.yml`.
+Two workflows: `docker.yml` (automatic build) and `dockerhub.yml` (manual
+Docker Hub release).
 
-## `docker.yml` — build & publish the image
+## `docker.yml` — build & publish to the Forgejo registry
 
 Triggers: `pull_request` → `master`, `push` → `master` and tags (`*`),
 and `workflow_dispatch` (with a `custom_tag` input).
@@ -12,13 +13,55 @@ Single `build` job, running in the **`docker:cli`** container:
 
 | Event | Behaviour |
 |-------|-----------|
-| `pull_request` | **Build only** — `docker build` validates the Dockerfile. No login, no push, no credentials needed. |
-| `push` to `master` | Build + push `:<sha>` to the Forgejo container registry. |
-| git tag | Build + push `:<tag>` and `:latest` to **both** the Forgejo registry and Docker Hub (`vinid223/gcloud-storage-backup`). |
-| manual (`workflow_dispatch`) | Build + push `:<custom_tag>` to the registry and Docker Hub. |
+| `pull_request` | Build + push `:pr-<number>` (throwaway tag for testing the PR image). |
+| `push` to `master` | Build + push `:<sha>`. |
+| git tag | Build + push `:<tag>` and `:latest`. |
+| manual (`workflow_dispatch`) | Build + push `:<custom_tag>`. |
+
+All pushes go to the Forgejo container registry only. **Docker Hub is never
+published automatically** — see `dockerhub.yml` below.
 
 This collapses the old GitLab `build` / `deploy_tag` / `deploy_latest` /
 `deploy_schedule_tag` jobs into one build with conditional publish steps.
+
+## `dockerhub.yml` — manual Docker Hub release
+
+Trigger: `workflow_dispatch` **only**. Run it from the Actions tab with these
+inputs:
+
+| Input | Meaning | Example |
+|-------|---------|---------|
+| `source` | Image already in the Forgejo registry to publish | `v1.3.0`, a commit sha, or `latest` |
+| `tags` | Docker Hub tags to create, comma-separated | `1.3.0,latest` |
+| `release_tag` | *(optional)* git tag to create + release in Forgejo. Empty → Docker Hub only | `V1.4` |
+
+The job pulls `<registry>/<repo>:<source>`, retags it, and pushes each tag to
+`vinid223/gcloud-storage-backup`. It does **not** rebuild — Docker Hub gets the
+byte-identical image `docker.yml` built and Trivy scanned. It fails fast with a
+clear error if `source` was never pushed to the Forgejo registry.
+
+### Cutting a Forgejo release
+
+When `release_tag` is set, the job — **after** the Docker Hub push succeeds, so a
+release never exists for an image that didn't ship — also:
+
+1. creates the git tag `<release_tag>` on the commit the run was dispatched from
+   (`github.sha`, i.e. the head of the branch/tag you selected when dispatching);
+   an existing tag with that name is reused rather than being an error;
+2. creates a Forgejo release for it whose notes are the commits since the
+   previous release — `git log <prev>..HEAD` as a bullet list, plus the published
+   image reference and a compare link.
+
+“Previous release” is the latest Forgejo release (`/releases/latest`); if the
+repo has none yet, it falls back to the most recently created git tag. Re-running
+with a `release_tag` that already has a release fails with a clear error instead
+of duplicating it.
+
+Both calls go through the Forgejo (Gitea-compatible) API, which is why the
+workflow declares `permissions: contents: write`. The automatic run token is
+enough for this — only the *package registry* rejects it (see below). Set the
+optional `RELEASE_TOKEN` secret (a PAT with repo write) only if your instance
+forbids run tokens from creating tags/releases.
 
 ### Runner requirements
 - **No buildx/dind.** The Forgejo runner has no in-job Docker CLI, but the host
@@ -28,9 +71,14 @@ This collapses the old GitLab `build` / `deploy_tag` / `deploy_latest` /
   node inside the container.
 
 ## Required secrets / variables
-Needed only for publishing (not for PR builds):
-- Secrets: `GITHUB_TOKEN` (auto-provided, Forgejo registry), `DOCKER_HUB_USERNAME`, `DOCKER_HUB_PASSWORD` (Docker Hub — a Hub access token is recommended over a password).
+- Secrets:
+  - `REGISTRY_TOKEN` (**required**) — a Forgejo **Personal Access Token** with the `write:package` scope, used to log in to the Forgejo container registry. Create it under *Settings → Applications → Access Tokens*, then add it as a repository (or org) secret.
+  - `REGISTRY_USERNAME` (optional) — the user that owns `REGISTRY_TOKEN`. Defaults to `github.repository_owner` (`vinid223`); only set it if the PAT belongs to a different account.
+  - `DOCKER_HUB_USERNAME`, `DOCKER_HUB_PASSWORD` — Docker Hub (an access token is recommended over a password). Used by `dockerhub.yml` only.
+  - `RELEASE_TOKEN` (optional) — PAT with repo write, used for creating the tag/release in `dockerhub.yml`. Falls back to the automatic `GITHUB_TOKEN`, which normally works for the repo API.
 - Variables: `REGISTRY` (defaults to `forge.vinid223.ca`).
+
+> **Why not `GITHUB_TOKEN`?** Forgejo's automatic per-run token **cannot** authenticate against the package registry — `docker login`/`docker push` fails with `unauthorized: reqPackageAccess` no matter what `permissions:` the workflow declares ([forgejo/forgejo#3571](https://codeberg.org/forgejo/forgejo/issues/3571), [#6904](https://codeberg.org/forgejo/forgejo/issues/6904)). A PAT is the supported workaround until that feature lands.
 
 ## Optimizations & conventions
 - **Concurrency:** a newer push to a ref cancels the in-progress run (tags are unique, so releases are never cancelled).

@@ -1,0 +1,207 @@
+# Publish an already-built image to Docker Hub — manual only.
+#
+# docker.yml builds and pushes to the Forgejo registry on every push/tag. This
+# workflow takes one of those images, retags it and pushes it to Docker Hub, so
+# what ships publicly is the byte-identical image CI built and Trivy scanned
+# (no rebuild). Run it from the Actions tab: pick the source image and the
+# Docker Hub tags to publish.
+#
+# Optionally (the `release_tag` input) it also cuts the release in Forgejo: a git
+# tag on the commit this run was dispatched from, plus a release whose notes are
+# the commits since the previous release.
+name: Publish to Docker Hub
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Source image in the Forgejo registry: a git tag (v1.3.0), a commit sha, or latest"
+        required: true
+        default: latest
+      tags:
+        description: "Docker Hub tags to publish, comma-separated (e.g. 1.3.0,latest)"
+        required: true
+        default: latest
+      release_tag:
+        description: "Git tag to create + release in Forgejo (e.g. V1.4). Empty = publish to Docker Hub only, no release."
+        required: false
+        default: ""
+
+# Never cancel a publish in flight; queue instead.
+concurrency:
+  group: dockerhub-publish
+  cancel-in-progress: false
+
+# `contents: write` is what lets the release steps create the git tag and the
+# release through the Forgejo API. (Unlike the package registry, the repo API
+# does accept the automatic per-run token.)
+permissions:
+  contents: write
+
+env:
+  REGISTRY: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}
+  IMAGE: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}/${{ github.repository }}
+  DOCKERHUB_IMAGE: vinid223/gcloud-storage-backup
+
+jobs:
+  publish-dockerhub:
+    runs-on: linux-amd64
+    container:
+      image: docker:cli
+    timeout-minutes: 30
+    env:
+      # Token for the tags/releases API. The automatic GITHUB_TOKEN is enough
+      # here; RELEASE_TOKEN (a PAT with repo write) is only needed if the
+      # instance forbids run tokens from creating tags/releases.
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+    steps:
+      # No checkout here — nothing is built from source, so no node bootstrap
+      # is needed either. Only the docker client (from docker:cli) against the
+      # host daemon, which the runner auto-mounts.
+
+      # Reading from the Forgejo registry uses the same PAT as docker.yml; the
+      # automatic GITHUB_TOKEN cannot authenticate against the package registry
+      # (see forgejo/forgejo#3571).
+      - name: Log in to Forgejo registry
+        run: |
+          if [ -z "${{ secrets.REGISTRY_TOKEN }}" ]; then
+            echo "::error::Secret REGISTRY_TOKEN is not set. Create a Forgejo Personal Access Token with the 'write:package' scope (Settings -> Applications) and add it as the repository secret REGISTRY_TOKEN."
+            exit 1
+          fi
+          echo "${{ secrets.REGISTRY_TOKEN }}" \
+            | docker login "${REGISTRY}" \
+                -u "${{ secrets.REGISTRY_USERNAME || github.repository_owner }}" \
+                --password-stdin
+
+      # --pull=always equivalent: fetch the exact image built by docker.yml.
+      # Fails loudly if the tag was never pushed (typo in `source`).
+      - name: Pull source image
+        run: |
+          src="${IMAGE}:${{ inputs.source }}"
+          echo "Pulling ${src}"
+          docker pull "${src}" || {
+            echo "::error::${src} not found in the Forgejo registry. Check the 'source' input — it must be a tag/sha already pushed by the Docker workflow."
+            exit 1
+          }
+
+      - name: Log in to Docker Hub
+        run: |
+          if [ -z "${{ secrets.DOCKER_HUB_PASSWORD }}" ]; then
+            echo "::error::Secrets DOCKER_HUB_USERNAME / DOCKER_HUB_PASSWORD are not set (a Docker Hub access token is recommended over a password)."
+            exit 1
+          fi
+          echo "${{ secrets.DOCKER_HUB_PASSWORD }}" \
+            | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
+
+      - name: Retag and push to Docker Hub
+        run: |
+          src="${IMAGE}:${{ inputs.source }}"
+          # Split the comma-separated `tags` input; word splitting also trims
+          # whitespace, so "1.3.0, latest" works as well as "1.3.0,latest".
+          for tag in $(echo "${{ inputs.tags }}" | tr ',' ' '); do
+            dst="${DOCKERHUB_IMAGE}:${tag}"
+            echo "Publishing ${dst}"
+            docker tag "${src}" "${dst}"
+            docker push "${dst}"
+          done
+
+      # ---- Forgejo tag + release (only when `release_tag` is given) ----
+      # Runs last, so a release only ever exists for an image that actually
+      # made it to Docker Hub.
+      - name: Bootstrap release tooling
+        if: inputs.release_tag != ''
+        # nodejs for the checkout JS action, git for the changelog, curl/jq for
+        # the Forgejo API. docker:cli ships none of them.
+        run: apk add --no-cache nodejs git curl jq
+
+      # Full history + all tags: needed to diff against the previous release.
+      - name: Checkout (full history)
+        if: inputs.release_tag != ''
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Build release notes (changes since last release)
+        if: inputs.release_tag != ''
+        env:
+          TAG: ${{ inputs.release_tag }}
+          SOURCE: ${{ inputs.source }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          set -eu
+          git config --global --add safe.directory "$PWD"
+          api="${GITHUB_API_URL:-${GITHUB_SERVER_URL}/api/v1}/repos/${GITHUB_REPOSITORY}"
+
+          # "Last release" = the latest Forgejo release. This repo has tags that
+          # predate Forgejo releases, so fall back to the most recently created
+          # tag (excluding the one being cut now, in case of a re-run).
+          prev=""
+          if resp=$(curl -sf -H "Authorization: token ${RELEASE_TOKEN}" "${api}/releases/latest"); then
+            prev=$(printf '%s' "$resp" | jq -r '.tag_name // empty')
+          fi
+          if [ -z "$prev" ]; then
+            prev=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' refs/tags \
+                   | grep -v -x -F "${TAG}" | head -n 1 || true)
+          fi
+          if [ -n "$prev" ] && git rev-parse -q --verify "refs/tags/${prev}" >/dev/null; then
+            range="${prev}..HEAD"
+          else
+            echo "No usable previous release found — listing the full history."
+            prev=""
+            range="HEAD"
+          fi
+
+          {
+            if [ -n "$prev" ]; then
+              echo "## Changes since ${prev}"
+            else
+              echo "## Changes"
+            fi
+            echo
+            git log --no-merges --reverse --pretty='- %s (%h)' "$range"
+            echo
+            echo "Docker image: \`${DOCKERHUB_IMAGE}:${TAGS}\` (published from \`${IMAGE}:${SOURCE}\`)"
+            if [ -n "$prev" ]; then
+              echo
+              echo "[Full diff](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${prev}...${TAG})"
+            fi
+          } > /tmp/release-notes.md
+
+          echo "---- release notes ----"
+          cat /tmp/release-notes.md
+
+      - name: Create tag and release in Forgejo
+        if: inputs.release_tag != ''
+        env:
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          set -eu
+          api="${GITHUB_API_URL:-${GITHUB_SERVER_URL}/api/v1}/repos/${GITHUB_REPOSITORY}"
+          auth="Authorization: token ${RELEASE_TOKEN}"
+
+          # Tag the commit this run was dispatched from. Tolerate a tag that
+          # already exists (re-run, or it was pushed by hand).
+          if curl -sf -o /dev/null -H "$auth" "${api}/tags/${TAG}"; then
+            echo "Tag ${TAG} already exists — reusing it."
+          else
+            code=$(curl -s -o /tmp/tag.json -w '%{http_code}' -X POST \
+              -H "$auth" -H 'Content-Type: application/json' \
+              -d "$(jq -n --arg t "$TAG" --arg s "${GITHUB_SHA}" '{tag_name:$t,target:$s}')" \
+              "${api}/tags")
+            if [ "$code" != "201" ]; then
+              echo "::error::Creating tag ${TAG} failed (HTTP ${code}): $(cat /tmp/tag.json)"
+              exit 1
+            fi
+            echo "Created tag ${TAG} at ${GITHUB_SHA}"
+          fi
+
+          payload=$(jq -n --arg t "$TAG" --arg s "${GITHUB_SHA}" \
+            --rawfile body /tmp/release-notes.md \
+            '{tag_name:$t,target_commitish:$s,name:$t,body:$body,draft:false,prerelease:false}')
+          code=$(curl -s -o /tmp/release.json -w '%{http_code}' -X POST \
+            -H "$auth" -H 'Content-Type: application/json' -d "$payload" "${api}/releases")
+          case "$code" in
+            201) echo "Released ${TAG}: $(jq -r '.html_url // empty' /tmp/release.json)" ;;
+            409) echo "::error::A release for ${TAG} already exists — delete it first or pick another tag."; exit 1 ;;
+            *)   echo "::error::Creating release ${TAG} failed (HTTP ${code}): $(cat /tmp/release.json)"; exit 1 ;;
+          esac

@@ -23,6 +23,12 @@ using an environment variable which uses the standard CRON notation.
 
 - `CRON_SCHEDULE` - set to `0 * * * *` by default, which means every hour.
 
+The schedule is evaluated in the container timezone, which is UTC by default. Set `TZ` to a
+zoneinfo name to use your own timezone for both the schedule and the log timestamps.
+
+- `TZ` - set to `UTC` by default (ex: `America/Montreal`). An unknown name falls back to UTC
+  and logs a warning at startup.
+
 ## Example invocation
 
 To backup the `Documents` and the `Photos` directories in your home folder, and
@@ -36,6 +42,7 @@ docker run -d -v /home/user/Documents:/data/documents \
               -e "GCSPATH=gs://yourgsbucket/" \ 
               -e "GCSOPTIONS=-d" \ 
               -e "CRON_SCHEDULE=0 3 * * *" \ 
+              -e "TZ=America/Montreal" \ 
               vinid223/gcloud-storage-docker 
 ```
 

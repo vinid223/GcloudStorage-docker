@@ -1,6 +1,8 @@
 # Build & publish Docker image
 # Converted from .gitlab-ci.yml (build / deploy_tag / deploy_latest /
-# deploy_schedule_tag). Pushes to the Forgejo container registry AND Docker Hub.
+# deploy_schedule_tag). Pushes to the Forgejo container registry only —
+# publishing to Docker Hub is a separate manual workflow (dockerhub.yml) that
+# retags an image built here.
 #
 # The Forgejo runner has no in-job Docker CLI, but the host Docker socket is
 # auto-mounted into job containers. So the job runs in the `docker:cli` image
@@ -18,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       custom_tag:
-        description: "Extra tag to publish (replaces GitLab scheduled CUSTOM_TAG)"
+        description: "Extra tag to publish to the Forgejo registry (replaces GitLab scheduled CUSTOM_TAG)"
         required: true
 
 # Cancel an in-progress run when a newer commit is pushed to the same ref.
@@ -27,11 +29,18 @@ concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
 
+# Only repo read is needed here. Pushing to the Forgejo container registry does
+# NOT go through this token: Forgejo's automatic GITHUB_TOKEN cannot authenticate
+# against the package registry at all (it fails with `unauthorized:
+# reqPackageAccess` regardless of `packages: write` — see forgejo/forgejo#3571).
+# The registry login below uses a Personal Access Token instead.
+permissions:
+  contents: read
+
 env:
   REGISTRY: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}
   # Forgejo registry image, e.g. forge.vinid223.ca/vinid223/gcloudstorage-docker
   IMAGE: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}/${{ github.repository }}
-  DOCKERHUB_IMAGE: vinid223/gcloud-storage-backup
 
 jobs:
   build:
@@ -49,8 +58,7 @@ jobs:
 
       - uses: actions/checkout@v6
 
-      # Build once, tagged with the commit sha. On pull_request we stop here —
-      # this validates the Dockerfile without pushing (no credentials needed).
+      # Build once, tagged with the commit sha. Publish steps below retag it.
       - name: Build image
         run: docker build -t "${IMAGE}:${{ github.sha }}" .
 
@@ -63,26 +71,46 @@ jobs:
             --severity HIGH,CRITICAL --ignore-unfixed --no-progress --exit-code 0 \
             "${IMAGE}:${{ github.sha }}"
 
-      # ---- everything below only runs off pull requests (push / tags / manual) ----
+      # ---- publish steps ----
+      # Every event pushes to the Forgejo registry, so log in on all events
+      # (pull requests now publish a pr-<number> tag; see below).
+      #
+      # Auth uses a Personal Access Token (scope `write:package`), NOT the
+      # automatic GITHUB_TOKEN — that one is rejected by the package registry.
+      # REGISTRY_USERNAME must be the user that owns the PAT (defaults to the
+      # repo owner); github.actor would be wrong for pushes by other users.
       - name: Log in to Forgejo registry
-        if: github.event_name != 'pull_request'
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login "${REGISTRY}" -u "${{ github.actor }}" --password-stdin
+        run: |
+          if [ -z "${{ secrets.REGISTRY_TOKEN }}" ]; then
+            echo "::error::Secret REGISTRY_TOKEN is not set. Create a Forgejo Personal Access Token with the 'write:package' scope (Settings -> Applications) and add it as the repository secret REGISTRY_TOKEN."
+            exit 1
+          fi
+          echo "${{ secrets.REGISTRY_TOKEN }}" \
+            | docker login "${REGISTRY}" \
+                -u "${{ secrets.REGISTRY_USERNAME || github.repository_owner }}" \
+                --password-stdin
+
+      # On a pull request, publish a throwaway :pr-<number> tag so the built
+      # image can be pulled/tested for that PR. Overwritten on each new push.
+      - name: Push :pr-<number> to Forgejo registry (pull request)
+        if: github.event_name == 'pull_request'
+        run: |
+          pr="pr-${{ github.event.number }}"
+          docker tag "${IMAGE}:${{ github.sha }}" "${IMAGE}:${pr}"
+          docker push "${IMAGE}:${pr}"
 
       - name: Push :<sha> to Forgejo registry
         if: github.event_name != 'pull_request'
         run: docker push "${IMAGE}:${{ github.sha }}"
 
-      - name: Log in to Docker Hub
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        run: echo "${{ secrets.DOCKER_HUB_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
-
       # deploy_tag + deploy_latest (GitLab `only: tags`): publish :<tag> and
-      # :latest to both the Forgejo registry and Docker Hub.
+      # :latest to the Forgejo registry. Docker Hub is published separately via
+      # the manual `Publish to Docker Hub` workflow (dockerhub.yml).
       - name: Publish tag + latest (on git tag)
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           ref="${{ github.ref_name }}"
-          for t in "${IMAGE}:${ref}" "${IMAGE}:latest" "${DOCKERHUB_IMAGE}:${ref}" "${DOCKERHUB_IMAGE}:latest"; do
+          for t in "${IMAGE}:${ref}" "${IMAGE}:latest"; do
             docker tag "${IMAGE}:${{ github.sha }}" "$t"
             docker push "$t"
           done
@@ -92,7 +120,5 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: |
           ct="${{ inputs.custom_tag }}"
-          for t in "${IMAGE}:${ct}" "${DOCKERHUB_IMAGE}:${ct}"; do
-            docker tag "${IMAGE}:${{ github.sha }}" "$t"
-            docker push "$t"
-          done
+          docker tag "${IMAGE}:${{ github.sha }}" "${IMAGE}:${ct}"
+          docker push "${IMAGE}:${ct}"
