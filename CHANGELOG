@@ -1,3 +1,14 @@
+# V1.4
+
+# 2026-07-24
+
+- Updated the alpine base image from 3.18 to 3.24
+- Updated the Google Cloud CLI from 396.0.0 to 577.0.0 (gsutil 5.37)
+- Added py3-crcmod so gsutil uses the compiled CRC32C implementation instead of the slow pure-Python fallback
+- The Google Cloud CLI version and the target architecture (amd64 / arm64) are now build arguments
+- Added timezone support through the TZ environment variable (defaults to UTC). TZ was previously
+  ignored: if you already set it, the CRON_SCHEDULE now runs in that timezone instead of UTC
+
 # V1.3
 
 # 2022-08-18

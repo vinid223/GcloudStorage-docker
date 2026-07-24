@@ -8,6 +8,7 @@ SECRET_KEY=${SECRET_KEY:-"NULL"}
 GCSPATH=${GCSPATH:?"GCSPATH required"}
 GCSOPTIONS=${GCSOPTIONS}
 CRON_SCHEDULE=${CRON_SCHEDULE:-0 * * * *}
+TZ=${TZ:-UTC}
 
 # Internal variables
 LOCKFILE="/tmp/gcloudlock.lock"
@@ -25,10 +26,29 @@ log_info()
     echo "$INPUT" >> $LOG
 }
 
+# Apply $TZ. musl resolves the TZ variable on its own, but crond only re-reads
+# it at startup and passes a minimal environment to the jobs it spawns, so
+# /etc/localtime is written too: that makes the schedule, this script and gsutil
+# all agree on the same zone. An unknown zone would silently fall back to UTC,
+# so it is reported loudly instead.
+setup_timezone()
+{
+    if [ ! -f "/usr/share/zoneinfo/$TZ" ]; then
+      echo "Unknown timezone '$TZ', falling back to UTC. Use a zoneinfo name such as America/Montreal."
+      TZ="UTC"
+    fi
+
+    cp "/usr/share/zoneinfo/$TZ" /etc/localtime
+    echo "$TZ" > /etc/timezone
+    export TZ
+}
+
 
 # Welcome
 echo "Welcome to Google Cloud Storage Docker"
 echo "A backup utility to GCP Bucket"
+
+setup_timezone
 
 if [[ $OPTION = "setup" ]]; then
 
@@ -55,13 +75,14 @@ if [[ $OPTION = "setup" ]]; then
   ls -F /data
   echo ""
 
-  echo "Adding CRON schedule: $CRON_SCHEDULE"
+  echo "Adding CRON schedule: $CRON_SCHEDULE ($TZ)"
 
   rm -f $CRONFILE
   rm -f $LOCKFILE
 
   CRONENV="$CRONENV GCSPATH=\"$GCSPATH\""
   CRONENV="$CRONENV GCSOPTIONS=\"$GCSOPTIONS\""
+  CRONENV="$CRONENV TZ=\"$TZ\""
   echo "$CRON_SCHEDULE $CRONENV sh /opt/run.sh backup" >> $CRONFILE
   echo "Starting CRON scheduler: $(date)"
   cat $CRONFILE
