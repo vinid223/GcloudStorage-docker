@@ -14,9 +14,19 @@ Single `build` job, running in the **`docker:cli`** container:
 | Event | Behaviour |
 |-------|-----------|
 | `pull_request` | Build + push `:pr-<number>` (throwaway tag for testing the PR image). |
-| `push` to `master` | Build + push `:<sha>`. |
-| git tag | Build + push `:<tag>` and `:latest`. |
+| `push` to `master` | Build + push `:<sha>` **and `:latest`**. |
+| git tag | Build + push `:<tag>` (does not touch `:latest`). |
 | manual (`workflow_dispatch`) | Build + push `:<custom_tag>`. |
+
+`:latest` is owned by master: every push to master moves it. That matters
+because `dockerhub.yml` takes no inputs and *always* publishes `:latest`, so
+master HEAD has to be what `:latest` points at. Tag builds deliberately leave
+`:latest` alone — release tags are created by `dockerhub.yml` *after* it has
+already shipped the current `:latest`, so re-pushing `latest` from a tag build
+would be redundant at best and (for a tag cut on an older commit) wrong.
+
+Every build stamps `org.opencontainers.image.revision=<sha>` into the image;
+`dockerhub.yml` reads it back to find the commit that `:latest` was built from.
 
 All pushes go to the Forgejo container registry only. **Docker Hub is never
 published automatically** — see `dockerhub.yml` below.
@@ -24,44 +34,61 @@ published automatically** — see `dockerhub.yml` below.
 This collapses the old GitLab `build` / `deploy_tag` / `deploy_latest` /
 `deploy_schedule_tag` jobs into one build with conditional publish steps.
 
-## `dockerhub.yml` — manual Docker Hub release
+## `dockerhub.yml` — Docker Hub release + Forgejo release
 
-Trigger: `workflow_dispatch` **only**. Run it from the Actions tab with these
-inputs:
+Trigger: `workflow_dispatch` **only, with no inputs** — the dispatch path used
+here cannot pass parameters, so everything the job needs is derived. Run it from
+the Actions tab and it:
 
-| Input | Meaning | Example |
-|-------|---------|---------|
-| `source` | Image already in the Forgejo registry to publish | `v1.3.0`, a commit sha, or `latest` |
-| `tags` | Docker Hub tags to create, comma-separated | `1.3.0,latest` |
-| `release_tag` | *(optional)* git tag to create + release in Forgejo. Empty → Docker Hub only | `V1.4` |
+1. pulls `<registry>/<repo>:latest` — always the source, never a rebuild, so
+   Docker Hub gets the byte-identical image `docker.yml` built and Trivy scanned.
+   Fails fast with a clear error if `:latest` was never pushed;
+2. resolves the **source commit** from the image's
+   `org.opencontainers.image.revision` label (falls back to `github.sha`, with a
+   warning, for images built before that label existed);
+3. computes the **next version** (see below);
+4. pushes `vinid223/gcloud-storage-backup:<version>` and `:latest`;
+5. creates the git tag `<version>` in Forgejo on the source commit, then a
+   Forgejo release for it with a changelog since the previous version tag.
 
-The job pulls `<registry>/<repo>:<source>`, retags it, and pushes each tag to
-`vinid223/gcloud-storage-backup`. It does **not** rebuild — Docker Hub gets the
-byte-identical image `docker.yml` built and Trivy scanned. It fails fast with a
-clear error if `source` was never pushed to the Forgejo registry.
+Steps 4–5 are in that order on purpose: a release never exists for an image
+that didn't ship.
 
-### Cutting a Forgejo release
+### Version numbering
 
-When `release_tag` is set, the job — **after** the Docker Hub push succeeds, so a
-release never exists for an image that didn't ship — also:
+The next version is derived from the git tags — no input, no file to edit:
 
-1. creates the git tag `<release_tag>` on the commit the run was dispatched from
-   (`github.sha`, i.e. the head of the branch/tag you selected when dispatching);
-   an existing tag with that name is reused rather than being an error;
-2. creates a Forgejo release for it whose notes are the commits since the
-   previous release — `git log <prev>..HEAD` as a bullet list, plus the published
-   image reference and a compare link.
+- the **highest existing version tag** wins, whatever its shape: `V`-prefixed or
+  not, 2- or 3-part (`V1.3`, `V1.2.0`, `1.1.7`) are all normalized to
+  `major.minor.patch` for comparison;
+- the default bump is **minor**, and the tag created is always
+  `V<major>.<minor>.<patch>` → `V1.3` yields **`V1.4.0`**;
+- put `[major]`, `[minor]` or `[patch]` in the source commit's message to
+  override the bump for that run (`[patch]` on top of `V1.3` → `V1.3.1`);
+- no version tags at all → `V1.0.0`;
+- if the computed version already exists as a tag, the run fails instead of
+  overwriting it.
 
-“Previous release” is the latest Forgejo release (`/releases/latest`); if the
-repo has none yet, it falls back to the most recently created git tag. Re-running
-with a `release_tag` that already has a release fails with a clear error instead
-of duplicating it.
+Change `DEFAULT_BUMP` in the workflow's `env:` to make patch (or major) the
+default instead.
 
-Both calls go through the Forgejo (Gitea-compatible) API, which is why the
-workflow declares `permissions: contents: write`. The automatic run token is
-enough for this — only the *package registry* rejects it (see below). Set the
-optional `RELEASE_TOKEN` secret (a PAT with repo write) only if your instance
-forbids run tokens from creating tags/releases.
+### Release notes
+
+`git log --no-merges <previous version tag>..<source commit>` as a bullet list
+(`- subject (sha)`), plus the published image reference and a compare link. If
+there are no commits since the previous tag the release is still cut, with a
+warning and a “No changes.” body. “Previous version” here is the same highest
+tag the version calculation used — not `/releases/latest` — so tags that predate
+Forgejo releases are handled correctly.
+
+The tag and release calls go through the Forgejo (Gitea-compatible) API, which
+is why the workflow declares `permissions: contents: write`. The automatic run
+token is enough for this — only the *package registry* rejects it (see below).
+Set the optional `RELEASE_TOKEN` secret (a PAT with repo write) only if your
+instance forbids run tokens from creating tags/releases.
+
+A `concurrency` group with `cancel-in-progress: false` serializes runs, since
+two concurrent ones would race on the version number.
 
 ### Runner requirements
 - **No buildx/dind.** The Forgejo runner has no in-job Docker CLI, but the host

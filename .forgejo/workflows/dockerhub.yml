@@ -1,33 +1,27 @@
-# Publish an already-built image to Docker Hub — manual only.
+# Release the current `:latest` image to Docker Hub — manual trigger, no inputs.
 #
-# docker.yml builds and pushes to the Forgejo registry on every push/tag. This
-# workflow takes one of those images, retags it and pushes it to Docker Hub, so
-# what ships publicly is the byte-identical image CI built and Trivy scanned
-# (no rebuild). Run it from the Actions tab: pick the source image and the
-# Docker Hub tags to publish.
+# docker.yml builds every push to master and moves `:latest` in the Forgejo
+# registry. This workflow takes that image as-is (no rebuild, so what ships
+# publicly is the byte-identical image CI built and Trivy scanned), works out the
+# next version number itself, and then:
 #
-# Optionally (the `release_tag` input) it also cuts the release in Forgejo: a git
-# tag on the commit this run was dispatched from, plus a release whose notes are
-# the commits since the previous release.
+#   1. pushes it to Docker Hub as :<version> and :latest;
+#   2. creates the git tag <version> in Forgejo, on the commit `:latest` was
+#      built from (read back from the image's revision label);
+#   3. creates a Forgejo release for that tag whose notes are the commits since
+#      the previous version tag.
+#
+# It deliberately takes NO workflow inputs — the dispatch path used here cannot
+# pass parameters. Everything is derived: source = `:latest`, version = previous
+# highest version tag with the minor bumped (`V1.3` -> `V1.4.0`). Put `[major]`,
+# `[minor]` or `[patch]` in the commit message to override that bump for a run.
 name: Publish to Docker Hub
 
 on:
   workflow_dispatch:
-    inputs:
-      source:
-        description: "Source image in the Forgejo registry: a git tag (v1.3.0), a commit sha, or latest"
-        required: true
-        default: latest
-      tags:
-        description: "Docker Hub tags to publish, comma-separated (e.g. 1.3.0,latest)"
-        required: true
-        default: latest
-      release_tag:
-        description: "Git tag to create + release in Forgejo (e.g. V1.4). Empty = publish to Docker Hub only, no release."
-        required: false
-        default: ""
 
-# Never cancel a publish in flight; queue instead.
+# Never cancel a publish in flight; queue instead. Two concurrent runs would
+# race on the version number.
 concurrency:
   group: dockerhub-publish
   cancel-in-progress: false
@@ -42,6 +36,9 @@ env:
   REGISTRY: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}
   IMAGE: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}/${{ github.repository }}
   DOCKERHUB_IMAGE: vinid223/gcloud-storage-backup
+  # Bump applied when the commit message carries no [major]/[minor]/[patch]
+  # marker. Versions are normalized to 3 parts: V1.3 -> V1.4.0.
+  DEFAULT_BUMP: minor
 
 jobs:
   publish-dockerhub:
@@ -55,9 +52,27 @@ jobs:
       # instance forbids run tokens from creating tags/releases.
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
-      # No checkout here — nothing is built from source, so no node bootstrap
-      # is needed either. Only the docker client (from docker:cli) against the
-      # host daemon, which the runner auto-mounts.
+      # docker:cli ships none of these: nodejs for the checkout JS action, git
+      # for the tag list + changelog, curl/jq for the Forgejo API. Installed
+      # before checkout — without git, the action silently falls back to a
+      # tarball download and there would be no history or tags to read.
+      - name: Bootstrap tooling
+        run: apk add --no-cache nodejs git curl jq
+
+      # Full history + all tags: needed to pick the previous version and diff
+      # against it.
+      - name: Checkout (full history)
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          set -eu
+          git config --global --add safe.directory "$PWD"
+          # fetch-depth: 0 normally brings tags along; make sure of it, since
+          # the whole version calculation depends on them.
+          git fetch --tags --force || echo "::warning::git fetch --tags failed; using the tags checkout provided."
 
       # Reading from the Forgejo registry uses the same PAT as docker.yml; the
       # automatic GITHUB_TOKEN cannot authenticate against the package registry
@@ -73,16 +88,132 @@ jobs:
                 -u "${{ secrets.REGISTRY_USERNAME || github.repository_owner }}" \
                 --password-stdin
 
-      # --pull=always equivalent: fetch the exact image built by docker.yml.
-      # Fails loudly if the tag was never pushed (typo in `source`).
-      - name: Pull source image
+      # The source is always :latest — i.e. the last successful master build.
+      - name: Pull :latest from the Forgejo registry
         run: |
-          src="${IMAGE}:${{ inputs.source }}"
-          echo "Pulling ${src}"
-          docker pull "${src}" || {
-            echo "::error::${src} not found in the Forgejo registry. Check the 'source' input — it must be a tag/sha already pushed by the Docker workflow."
+          set -eu
+          echo "Pulling ${IMAGE}:latest"
+          docker pull "${IMAGE}:latest" || {
+            echo "::error::${IMAGE}:latest not found in the Forgejo registry. It is published by the Docker workflow on every push to master — make sure that ran successfully at least once."
             exit 1
           }
+
+      # Tag and release the commit the *image* came from, not whatever HEAD
+      # happens to be now: the label is stamped in at build time by docker.yml.
+      # Older images (built before the label existed) fall back to HEAD.
+      - name: Resolve source commit
+        run: |
+          set -eu
+          sha=$(docker image inspect \
+                  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+                  "${IMAGE}:latest" 2>/dev/null || true)
+          if [ -z "$sha" ] || [ "$sha" = "<no value>" ] || ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+            echo "::warning:::latest carries no usable org.opencontainers.image.revision label (${sha:-unset}); falling back to ${GITHUB_SHA}."
+            sha="${GITHUB_SHA}"
+          fi
+          echo "SOURCE_SHA=${sha}" >> "$GITHUB_ENV"
+          echo "Source commit: ${sha} ($(git log -1 --pretty='%s' "$sha"))"
+
+      # Next version = highest existing version tag, minor-bumped by default.
+      # Tag names may be V-prefixed or not, 2- or 3-part (V1.3, V1.2.0, 1.1.7);
+      # all are normalized to major.minor.patch for comparison, and the tag we
+      # create is always V<major>.<minor>.<patch>.
+      - name: Compute next version
+        run: |
+          set -eu
+
+          best=0
+          prev_tag=""
+          prev_ver=""
+          for t in $(git tag -l); do
+            v="$t"
+            case "$v" in [Vv]*) v="${v#?}" ;; esac
+            printf '%s' "$v" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$' || continue
+            maj="${v%%.*}"
+            rest="${v#*.}"
+            min="${rest%%.*}"
+            case "$rest" in *.*) pat="${rest#*.}" ;; *) pat=0 ;; esac
+            # Zero-padded so plain integer comparison orders versions correctly.
+            key=$(printf '%d%05d%05d' "$maj" "$min" "$pat")
+            if [ "$key" -gt "$best" ]; then
+              best="$key"
+              prev_tag="$t"
+              prev_ver="${maj}.${min}.${pat}"
+            fi
+          done
+
+          if [ -z "$prev_tag" ]; then
+            echo "No version tag found — starting at V1.0.0."
+            version="V1.0.0"
+          else
+            maj="${prev_ver%%.*}"
+            rest="${prev_ver#*.}"
+            min="${rest%%.*}"
+            pat="${rest#*.}"
+
+            # A [major]/[minor]/[patch] marker in the source commit message
+            # overrides DEFAULT_BUMP for this run (no workflow inputs needed).
+            bump="${DEFAULT_BUMP}"
+            msg=$(git log -1 --pretty='%B' "${SOURCE_SHA}")
+            case "$msg" in
+              *'[major]'*|*'[MAJOR]'*) bump=major ;;
+              *'[minor]'*|*'[MINOR]'*) bump=minor ;;
+              *'[patch]'*|*'[PATCH]'*) bump=patch ;;
+            esac
+
+            case "$bump" in
+              major) maj=$((maj + 1)); min=0; pat=0 ;;
+              minor) min=$((min + 1)); pat=0 ;;
+              patch) pat=$((pat + 1)) ;;
+              *) echo "::error::DEFAULT_BUMP must be major, minor or patch (got '${bump}')."; exit 1 ;;
+            esac
+            echo "Previous version: ${prev_tag} (${prev_ver}), bump: ${bump}"
+            version="V${maj}.${min}.${pat}"
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${version}" >/dev/null; then
+            echo "::error::Computed version ${version} already exists as a git tag. Refusing to overwrite it."
+            exit 1
+          fi
+
+          echo "PREV_TAG=${prev_tag}" >> "$GITHUB_ENV"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "Next version: ${version}"
+
+      - name: Build release notes (changes since the previous version)
+        run: |
+          set -eu
+          if [ -n "${PREV_TAG}" ]; then
+            range="${PREV_TAG}..${SOURCE_SHA}"
+          else
+            echo "No previous version tag — listing the full history."
+            range="${SOURCE_SHA}"
+          fi
+
+          git log --no-merges --reverse --pretty='- %s (%h)' "$range" > /tmp/commits.md
+          if [ ! -s /tmp/commits.md ]; then
+            echo "::warning::No commits between ${PREV_TAG:-the start of history} and ${SOURCE_SHA} — releasing ${VERSION} with an empty changelog."
+            echo "- No changes." > /tmp/commits.md
+          fi
+
+          {
+            if [ -n "${PREV_TAG}" ]; then
+              echo "## Changes since ${PREV_TAG}"
+            else
+              echo "## Changes"
+            fi
+            echo
+            cat /tmp/commits.md
+            echo
+            echo "Docker image: \`${DOCKERHUB_IMAGE}:${VERSION}\` (also tagged \`latest\`, published from \`${IMAGE}:latest\` built at \`${SOURCE_SHA}\`)"
+            if [ -n "${PREV_TAG}" ]; then
+              echo
+              echo "[Full diff](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${VERSION})"
+            fi
+          } > /tmp/release-notes.md
+
+          echo "---- release notes ----"
+          cat /tmp/release-notes.md
 
       - name: Log in to Docker Hub
         run: |
@@ -95,113 +226,51 @@ jobs:
 
       - name: Retag and push to Docker Hub
         run: |
-          src="${IMAGE}:${{ inputs.source }}"
-          # Split the comma-separated `tags` input; word splitting also trims
-          # whitespace, so "1.3.0, latest" works as well as "1.3.0,latest".
-          for tag in $(echo "${{ inputs.tags }}" | tr ',' ' '); do
+          set -eu
+          for tag in "${VERSION}" latest; do
             dst="${DOCKERHUB_IMAGE}:${tag}"
             echo "Publishing ${dst}"
-            docker tag "${src}" "${dst}"
+            docker tag "${IMAGE}:latest" "${dst}"
             docker push "${dst}"
           done
 
-      # ---- Forgejo tag + release (only when `release_tag` is given) ----
-      # Runs last, so a release only ever exists for an image that actually
-      # made it to Docker Hub.
-      - name: Bootstrap release tooling
-        if: inputs.release_tag != ''
-        # nodejs for the checkout JS action, git for the changelog, curl/jq for
-        # the Forgejo API. docker:cli ships none of them.
-        run: apk add --no-cache nodejs git curl jq
-
-      # Full history + all tags: needed to diff against the previous release.
-      - name: Checkout (full history)
-        if: inputs.release_tag != ''
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Build release notes (changes since last release)
-        if: inputs.release_tag != ''
-        env:
-          TAG: ${{ inputs.release_tag }}
-          SOURCE: ${{ inputs.source }}
-          TAGS: ${{ inputs.tags }}
-        run: |
-          set -eu
-          git config --global --add safe.directory "$PWD"
-          api="${GITHUB_API_URL:-${GITHUB_SERVER_URL}/api/v1}/repos/${GITHUB_REPOSITORY}"
-
-          # "Last release" = the latest Forgejo release. This repo has tags that
-          # predate Forgejo releases, so fall back to the most recently created
-          # tag (excluding the one being cut now, in case of a re-run).
-          prev=""
-          if resp=$(curl -sf -H "Authorization: token ${RELEASE_TOKEN}" "${api}/releases/latest"); then
-            prev=$(printf '%s' "$resp" | jq -r '.tag_name // empty')
-          fi
-          if [ -z "$prev" ]; then
-            prev=$(git for-each-ref --sort=-creatordate --format='%(refname:short)' refs/tags \
-                   | grep -v -x -F "${TAG}" | head -n 1 || true)
-          fi
-          if [ -n "$prev" ] && git rev-parse -q --verify "refs/tags/${prev}" >/dev/null; then
-            range="${prev}..HEAD"
-          else
-            echo "No usable previous release found — listing the full history."
-            prev=""
-            range="HEAD"
-          fi
-
-          {
-            if [ -n "$prev" ]; then
-              echo "## Changes since ${prev}"
-            else
-              echo "## Changes"
-            fi
-            echo
-            git log --no-merges --reverse --pretty='- %s (%h)' "$range"
-            echo
-            echo "Docker image: \`${DOCKERHUB_IMAGE}:${TAGS}\` (published from \`${IMAGE}:${SOURCE}\`)"
-            if [ -n "$prev" ]; then
-              echo
-              echo "[Full diff](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${prev}...${TAG})"
-            fi
-          } > /tmp/release-notes.md
-
-          echo "---- release notes ----"
-          cat /tmp/release-notes.md
-
+      # ---- Forgejo tag + release ----
+      # Runs last, so a release only ever exists for an image that actually made
+      # it to Docker Hub.
       - name: Create tag and release in Forgejo
-        if: inputs.release_tag != ''
-        env:
-          TAG: ${{ inputs.release_tag }}
         run: |
           set -eu
           api="${GITHUB_API_URL:-${GITHUB_SERVER_URL}/api/v1}/repos/${GITHUB_REPOSITORY}"
           auth="Authorization: token ${RELEASE_TOKEN}"
 
-          # Tag the commit this run was dispatched from. Tolerate a tag that
-          # already exists (re-run, or it was pushed by hand).
-          if curl -sf -o /dev/null -H "$auth" "${api}/tags/${TAG}"; then
-            echo "Tag ${TAG} already exists — reusing it."
+          # Tolerate a tag that already exists (re-run after a failed release,
+          # or it was pushed by hand between the version check and here).
+          if curl -sf -o /dev/null -H "$auth" "${api}/tags/${VERSION}"; then
+            echo "Tag ${VERSION} already exists — reusing it."
           else
             code=$(curl -s -o /tmp/tag.json -w '%{http_code}' -X POST \
               -H "$auth" -H 'Content-Type: application/json' \
-              -d "$(jq -n --arg t "$TAG" --arg s "${GITHUB_SHA}" '{tag_name:$t,target:$s}')" \
+              -d "$(jq -n --arg t "${VERSION}" --arg s "${SOURCE_SHA}" '{tag_name:$t,target:$s}')" \
               "${api}/tags")
             if [ "$code" != "201" ]; then
-              echo "::error::Creating tag ${TAG} failed (HTTP ${code}): $(cat /tmp/tag.json)"
+              echo "::error::Creating tag ${VERSION} failed (HTTP ${code}): $(cat /tmp/tag.json)"
               exit 1
             fi
-            echo "Created tag ${TAG} at ${GITHUB_SHA}"
+            echo "Created tag ${VERSION} at ${SOURCE_SHA}"
           fi
 
-          payload=$(jq -n --arg t "$TAG" --arg s "${GITHUB_SHA}" \
+          payload=$(jq -n --arg t "${VERSION}" --arg s "${SOURCE_SHA}" \
             --rawfile body /tmp/release-notes.md \
             '{tag_name:$t,target_commitish:$s,name:$t,body:$body,draft:false,prerelease:false}')
           code=$(curl -s -o /tmp/release.json -w '%{http_code}' -X POST \
             -H "$auth" -H 'Content-Type: application/json' -d "$payload" "${api}/releases")
           case "$code" in
-            201) echo "Released ${TAG}: $(jq -r '.html_url // empty' /tmp/release.json)" ;;
-            409) echo "::error::A release for ${TAG} already exists — delete it first or pick another tag."; exit 1 ;;
-            *)   echo "::error::Creating release ${TAG} failed (HTTP ${code}): $(cat /tmp/release.json)"; exit 1 ;;
+            201) echo "Released ${VERSION}: $(jq -r '.html_url // empty' /tmp/release.json)" ;;
+            409) echo "::error::A release for ${VERSION} already exists — delete it before re-running."; exit 1 ;;
+            *)   echo "::error::Creating release ${VERSION} failed (HTTP ${code}): $(cat /tmp/release.json)"; exit 1 ;;
           esac
+
+      - name: Summary
+        run: |
+          echo "Published ${DOCKERHUB_IMAGE}:${VERSION} and ${DOCKERHUB_IMAGE}:latest"
+          echo "from ${IMAGE}:latest (commit ${SOURCE_SHA}), released as ${VERSION} in Forgejo."
