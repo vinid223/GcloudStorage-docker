@@ -5,18 +5,21 @@ Note : This repository is maintained on a private Forgejo server (CI/CD via Forg
 Github repository : https://github.com/vinid223/GcloudStorage-docker
 Docker Hub : https://hub.docker.com/r/vinid223/gcloud-storage-backup
 
-gcloud-storage-docker is a Docker container which backs up one or more folders to Google Cloud Storage using the gsutil tool.
+gcloud-storage-docker is a Docker container which backs up one or more folders to Google Cloud Storage using the `gcloud storage` tool.
+
+> **Upgrading from 1.x?** Version 2.0 replaces gsutil with `gcloud storage` and no longer accepts
+> HMAC keys. `ACCESS_KEY`, `SECRET_KEY` and `BOTO_FILE` are gone; you now mount a service account
+> JSON key file instead. See [Migrating from 1.x](#migrating-from-1x).
 
 To tell gcloud-storage-docker what to back up, mount your desired volumes under the `/data` directory.
 
 gcloud-storage-docker is configured by setting the following environment variables during
 the launch of the container.
 
-- ACCESS_KEY - your GCP access key for a service account. The string should not contains the character `|`.
-- SECRET_KEY - your GCP secret key for a service account. The string should not contains the character `|`
+- SERVICE_ACCOUNT_FILE - path to a mounted service account JSON key file, used to authenticate. Required.
 - GCSPATH - your GCS bucket and path (ex: gs://personal-backup-bucket/)
-- GCSOPTIONS - custom parameters to gsutil. (ex: "-d" to have a exact copy of the local files (delete on the bucket files that don't exists anymore) )
-- BOTO_FILE - user generated configuration file containing the access_key, secret_key and your own configurations. This setting ignore ACCESS_KEY and SECRET_KEY. See below for more detail.
+- GCSOPTIONS - custom parameters to `gcloud storage rsync`. (ex: "-d" to have a exact copy of the local files (delete on the bucket files that don't exists anymore) )
+- PROJECT_ID - optional GCP project, if your bucket needs one to be set.
 
 Files are by default backed up once every hour. You can customize this behavior
 using an environment variable which uses the standard CRON notation.
@@ -37,8 +40,8 @@ running the backup at 03:00 every day, you could use something like this:
 ```
 docker run -d -v /home/user/Documents:/data/documents \ 
               -v /home/user/Photos:/data/photos \ 
-              -e "ACCESS_KEY=YOURACCESSKEY" \ 
-              -e "SECRET_KEY=YOURSECRETKEY" \ 
+              -v /path/to/service-account.json:/secrets/sa.json:ro \ 
+              -e "SERVICE_ACCOUNT_FILE=/secrets/sa.json" \ 
               -e "GCSPATH=gs://yourgsbucket/" \ 
               -e "GCSOPTIONS=-d" \ 
               -e "CRON_SCHEDULE=0 3 * * *" \ 
@@ -46,49 +49,70 @@ docker run -d -v /home/user/Documents:/data/documents \
               vinid223/gcloud-storage-docker 
 ```
 
-## How to get your Access Key and Secret Key
+## How to get your service account key file
 
-1. Go to your GCS Settings page, on the Interoperability tab here https://console.cloud.google.com/storage/settings;tab=interoperability
-2. Under `Service account HMAC`, click on a service account if one exists or create a new one by clicking on `CREATE A KEY FOR ANOTHER SERVICE ACCOUNT`
-3. Click on `CREATE A KEY` and you should see your Access Key and Secret Key
+1. Go to https://console.cloud.google.com/iam-admin/serviceaccounts and create a service account
+   (or pick an existing one).
+2. Grant it access to your bucket: `Storage Object Admin` on the bucket covers everything rsync
+   needs, including the deletions `-d` performs. Without `-d`, `Storage Object User` is enough.
+3. Open the service account, go to the `Keys` tab, then `ADD KEY` -> `Create new key` -> `JSON`,
+   and download the file.
+4. Mount that file into the container and point `SERVICE_ACCOUNT_FILE` at the path inside the
+   container, as in the example above. Mounting it read-only (`:ro`) is recommended.
 
-## Use local file for Google Cloud config
+The key file is read at backup time to mint an access token; nothing is written to the container.
+The startup log prints which service account is in use so you can confirm the identity.
 
-If you want to avoid using Environement variables for security reasons, you can pass a file to the container. 
+## Backup options
 
-Create a local file and add the following:
+`GCSOPTIONS` is passed to `gcloud storage rsync`. The command already runs recursively and in
+parallel, so the useful additions are:
 
-```
-[Credentials]
-gs_access_key_id=YOURACCESSKEY
-gs_secret_access_key=YOURSECRETKEY
+| Option | Effect |
+| --- | --- |
+| `--delete-unmatched-destination-objects` (or `-d`) | delete objects in the bucket that no longer exist locally |
+| `--dry-run` (or `-n`) | print what would be copied without copying it |
+| `--continue-on-error` (or `-C`) | keep going after an individual failure |
+| `--exclude REGEX` (or `-x REGEX`) | skip paths matching the regex |
+| `--ignore-symlinks` (or `-e`) | do not follow symlinks |
 
-[Boto]
+The short forms are the gsutil flags used by 1.x: they are still accepted and translated, so an
+existing `GCSOPTIONS` does not need to be rewritten. `-r`, `-R` and `-m` are ignored because
+`gcloud storage rsync` is already recursive and parallel. Any other value is passed through
+untouched, so any `gcloud storage rsync` flag can be used directly.
 
-[GoogleCompute]
+## Migrating from 1.x
 
-[GSUtil]
-content_language = en
-default_api_version = 2
+Version 2.0 backs up with `gcloud storage`, the tool Google recommends, because **gsutil is removed
+from the Google Cloud CLI after March 2027**. The catch is authentication: `gcloud storage` uses the
+JSON API, and HMAC keys can only sign XML API requests. There is no way to keep using HMAC keys with
+it, so the credentials have to change.
 
-[OAuth2]
-```
+| 1.x | 2.0 |
+| --- | --- |
+| `ACCESS_KEY` + `SECRET_KEY` (HMAC) | `SERVICE_ACCOUNT_FILE` pointing at a mounted JSON key |
+| `BOTO_FILE` (HMAC in a boto file) | `SERVICE_ACCOUNT_FILE` pointing at a mounted JSON key |
+| `gsutil -m rsync -r` | `gcloud storage rsync --recursive` |
 
-load it in the container (via volumes) and add a `BOTO_FILE` environement variable with the PATH of the file you mounted. 
-This will completely ignore `ACCESS_KEY` and `SECRET_KEY`
+Everything else is unchanged: `/data`, `GCSPATH`, `GCSOPTIONS`, `CRON_SCHEDULE`, `TZ` and the
+`setup` / `backup` commands all behave the same way.
 
-### Example invocation
+Steps:
 
-```
-docker run -d -v /home/user/Documents:/data/documents \ 
-              -v /home/user/Photos:/data/photos \ 
-              -v /path/to/local/boto/file:/tmp/boto.tmp \ 
-              -e "BOTO_FILE=/tmp/boto.tmp" \ 
-              -e "GCSPATH=gs://yourgsbucket/" \ 
-              -e "GCSOPTIONS=-d" \ 
-              -e "CRON_SCHEDULE=0 3 * * *" \ 
-              vinid223/gcloud-storage-docker 
-```
+1. Create a service account and download a JSON key, as described above. The HMAC keys you use
+   today already belong to a service account, which you can reuse - the console shows which one
+   under `Service account HMAC` in the
+   [interoperability settings](https://console.cloud.google.com/storage/settings;tab=interoperability).
+2. Mount the key file and replace `ACCESS_KEY` / `SECRET_KEY` (or `BOTO_FILE`) with
+   `SERVICE_ACCOUNT_FILE`.
+3. Optionally check the result before the first scheduled run:
+   `docker exec <container> sh /opt/run.sh backup` and look at `/var/log/cron.log`.
+
+If any of the removed variables are still set, the container stops at startup with these
+instructions rather than running a backup that cannot authenticate.
+
+Staying on 1.x is also an option: the `V1.3` tag keeps working with HMAC keys, and gsutil itself
+keeps working until Google removes it in March 2027.
 
 ## Inspiration
 https://github.com/joch/docker-s3backup

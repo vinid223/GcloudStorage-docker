@@ -1,13 +1,36 @@
-# V1.4
+# V2.0
 
 # 2026-07-24
 
+BREAKING CHANGES
+
+- gsutil is gone. Backups now run `gcloud storage rsync`, the tool Google recommends, because gsutil
+  is removed from the Google Cloud CLI after March 2027. The gsutil component is also removed from
+  the image.
+- ACCESS_KEY, SECRET_KEY and BOTO_FILE are no longer supported. `gcloud storage` uses the JSON API
+  and HMAC keys can only sign XML API requests, so they cannot be used at all. Authentication is now
+  a service account JSON key file mounted in the container and pointed at by SERVICE_ACCOUNT_FILE,
+  which is required. A container still using the removed variables stops at startup with migration
+  instructions. See "Migrating from 1.x" in the README.
+- The bundled boto.config file is removed with them.
+- Symlinks: `gcloud storage rsync` ignores symlinks by default where gsutil followed them. The
+  1.x behaviour is kept by always passing --no-ignore-symlinks, so no change in practice.
+
+Other changes
+
 - Updated the alpine base image from 3.18 to 3.24
-- Updated the Google Cloud CLI from 396.0.0 to 577.0.0 (gsutil 5.37)
-- Added py3-crcmod so gsutil uses the compiled CRC32C implementation instead of the slow pure-Python fallback
+- Updated the Google Cloud CLI from 396.0.0 to 577.0.0
 - The Google Cloud CLI version and the target architecture (amd64 / arm64) are now build arguments
 - Added timezone support through the TZ environment variable (defaults to UTC). TZ was previously
   ignored: if you already set it, the CRON_SCHEDULE now runs in that timezone instead of UTC
+- Added PROJECT_ID for buckets that need a project to be set
+- GCSOPTIONS keeps working: the gsutil rsync flags from 1.x (-d, -n, -C, -e, -x, and the now
+  pointless -r/-R/-m) are translated to their gcloud storage equivalents, and any other value is
+  passed through so gcloud storage flags can be used directly
+- A failed sync now logs its exit status instead of finishing silently
+- gcloud is on PATH, so `docker exec <container> gcloud storage ls ...` works for debugging
+- CLOUDSDK_* variables set on the container are carried over to the scheduled run, so CLI settings
+  such as endpoint overrides or proxy configuration apply to backups too
 
 # V1.3
 
