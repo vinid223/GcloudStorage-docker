@@ -13,8 +13,10 @@ BREAKING CHANGES
   which is required. A container still using the removed variables stops at startup with migration
   instructions. See "Migrating from 1.x" in the README.
 - The bundled boto.config file is removed with them.
-- Symlinks: `gcloud storage rsync` ignores symlinks by default where gsutil followed them. The
-  1.x behaviour is kept by always passing --no-ignore-symlinks, so no change in practice.
+- Symlinks: `gcloud storage rsync` ignores symlinks by default where gsutil followed them, so
+  --no-ignore-symlinks is passed to keep the 1.x behaviour for file symlinks. One caveat: gsutil
+  never followed *directory* symlinks regardless of -e, while gcloud storage may descend into them.
+  If /data contains a symlink to a directory, check the first run with GCSOPTIONS=-n.
 
 Other changes
 
@@ -27,10 +29,58 @@ Other changes
 - GCSOPTIONS keeps working: the gsutil rsync flags from 1.x (-d, -n, -C, -e, -x, and the now
   pointless -r/-R/-m) are translated to their gcloud storage equivalents, and any other value is
   passed through so gcloud storage flags can be used directly
-- A failed sync now logs its exit status instead of finishing silently
 - gcloud is on PATH, so `docker exec <container> gcloud storage ls ...` works for debugging
 - CLOUDSDK_* variables set on the container are carried over to the scheduled run, so CLI settings
   such as endpoint overrides or proxy configuration apply to backups too
+
+Reliability
+
+- A failed sync is now both logged and reported: `run.sh backup` exits with the sync's own status, so
+  cron, `docker exec` and the new healthcheck can all tell a failed backup from a successful one.
+  Previously it exited 0 no matter what, and the failure was visible only by reading the log
+- Added a healthcheck reporting the outcome of the last completed backup, so a backup that keeps
+  failing shows up as an unhealthy container instead of only in the log. A container that has not
+  completed a backup yet is healthy; disable with `docker run --no-healthcheck`
+- The lock file now holds the pid of the run that took it. A lock left behind by an interrupted run
+  (SIGKILL, or the container stopped mid-sync) is recognised as stale and taken over, where before it
+  blocked every later backup until the container was recreated. The lock is also released when a run
+  is interrupted, and two runs starting at the same moment can no longer both take it
+- The backup log is trimmed to its most recent half once it passes LOG_MAX_BYTES (10 MB by default,
+  0 to disable). It previously grew without bound
+- crond's own messages now go to the log, so "did the schedule fire at all?" is answerable
+- A CRON_SCHEDULE that is neither five fields nor an @macro is rejected at startup instead of being
+  accepted by crond and then never firing
+- Added RUN_ON_STARTUP=true to run one backup as the container starts, instead of waiting up to a
+  whole interval to discover that the configuration is wrong. Off by default
+- GCSOPTIONS is no longer expanded against the container's files: an --exclude regex such as `.*\.log`
+  or `*` reaches gcloud as written. A pattern containing a space can be quoted inside the variable
+  (GCSOPTIONS="-x 'my notes'"), and an unbalanced quote is reported instead of running a
+  half-parsed command
+- -e (--ignore-symlinks) no longer produces a contradictory pair of flags alongside the default
+- run.sh is POSIX sh, matching the shell the image actually has (there is no bash in it)
+
+Image
+
+- About 65 MB smaller. The CLI's bundled Python is no longer shipped, since the image runs the CLI on
+  Alpine's python3, and gsutil is excluded when the tarball is unpacked rather than removed
+  afterwards - removing the component byte-compiled the whole CLI on its way out, which added far
+  more bytecode than the files it deleted, and dropping that bytecode only moved the cost to the
+  first run of every container
+- The CLI tarball's SHA256 is verified during the build, so a corrupted or substituted download fails
+  the build instead of being installed
+- Added a .dockerignore, so the build context no longer includes .git and the docs
+
+Testing and CI
+
+- Added two test suites under tests/: a fast one that asserts the exact command the image builds (no
+  bucket needed, runs in CI on every push) and an end-to-end one that runs real transfers against a
+  local Google Cloud Storage stand-in. See tests/README.md
+- CI now lints (shellcheck, hadolint) and runs the fast suite before anything is published. One case
+  checks every flag the GCSOPTIONS translation can emit against `gcloud storage rsync --help`, so a
+  future CLI bump that renames or drops a flag fails the build rather than the next backup
+- The workflow can publish a multi-architecture image by setting the PLATFORMS variable. It still
+  defaults to linux/amd64, which is all it built before; see .forgejo/workflows/README.md for what
+  the runner needs first
 
 # V1.3
 

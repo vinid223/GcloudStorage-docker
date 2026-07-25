@@ -32,6 +32,47 @@ zoneinfo name to use your own timezone for both the schedule and the log timesta
 - `TZ` - set to `UTC` by default (ex: `America/Montreal`). An unknown name falls back to UTC
   and logs a warning at startup.
 
+A schedule that is neither five fields nor an `@macro` (`@daily`, `@hourly`, ...) is rejected at
+startup rather than accepted and never fired.
+
+The remaining settings are optional and default to the previous behaviour:
+
+- `RUN_ON_STARTUP` - set to `true` to run one backup as soon as the container starts, instead of
+  waiting up to a whole schedule interval to find out whether the configuration works. Off by
+  default.
+- `LOG_MAX_BYTES` - the backup log (`/var/log/cron.log`) is trimmed to its most recent half once it
+  grows past this, so an hourly backup cannot fill the container's disk over months. Defaults to
+  `10485760` (10 MB); set `0` to never trim.
+
+## Checking on it
+
+The container's stdout is the backup log, so `docker logs -f <container>` follows it live.
+
+The image also declares a **healthcheck** that reports the outcome of the last completed backup, so
+a backup that keeps failing shows up in `docker ps` as `unhealthy` instead of only in the log:
+
+```
+docker inspect --format '{{.State.Health.Status}}: {{(index .State.Health.Log 0).Output}}' <container>
+```
+
+A container that has not completed a backup yet is healthy. Use `docker run --no-healthcheck` to
+turn it off.
+
+To run a backup immediately, outside the schedule:
+
+```
+docker exec <container> sh /opt/run.sh backup
+```
+
+It exits 0 on success and non-zero if the sync failed, so it can be used from a wrapper script or a
+monitoring check. Add `-e GCSOPTIONS=-n` to the `docker exec` for a dry run without changing the
+container's own configuration.
+
+> Note: `gcloud auth list` inside the container reports *no credentialed accounts* even when
+> everything is working. The CLI is pointed straight at the mounted key file rather than at a stored
+> login, so an empty `auth list` is expected and is not a sign that authentication is broken. The
+> startup log prints the service account actually in use.
+
 ## Example invocation
 
 To backup the `Documents` and the `Photos` directories in your home folder, and
@@ -81,6 +122,29 @@ existing `GCSOPTIONS` does not need to be rewritten. `-r`, `-R` and `-m` are ign
 `gcloud storage rsync` is already recursive and parallel. Any other value is passed through
 untouched, so any `gcloud storage rsync` flag can be used directly.
 
+`--exclude` takes a regular expression, and it reaches gcloud exactly as written - it is not expanded
+against the files in the container. A pattern containing a space has to be quoted *inside* the
+variable:
+
+```
+-e "GCSOPTIONS=-x 'my notes'"          # one pattern, with a space in it
+-e "GCSOPTIONS=-x .*\.log"             # backslashes are kept as-is
+```
+
+An unbalanced quote is reported in the log and the backup exits without touching the bucket, rather
+than running a half-parsed command.
+
+### Symlinks
+
+`gcloud storage rsync` ignores symlinks by default, where gsutil followed them, so the image passes
+`--no-ignore-symlinks` to keep the 1.x behaviour. Pass `-e` (or `--ignore-symlinks`) in `GCSOPTIONS`
+to skip them instead; the default is then left out rather than being contradicted.
+
+One difference worth knowing if you have symlinks under `/data`: gsutil never followed *directory*
+symlinks, regardless of `-e`, while `gcloud storage` may descend into them. If `/data` contains a
+symlink to a directory, check the first run (`GCSOPTIONS=-n` shows what would be copied without
+copying it) rather than assuming the contents are identical to 1.x.
+
 ## Migrating from 1.x
 
 Version 2.0 backs up with `gcloud storage`, the tool Google recommends, because **gsutil is removed
@@ -105,14 +169,27 @@ Steps:
    [interoperability settings](https://console.cloud.google.com/storage/settings;tab=interoperability).
 2. Mount the key file and replace `ACCESS_KEY` / `SECRET_KEY` (or `BOTO_FILE`) with
    `SERVICE_ACCOUNT_FILE`.
-3. Optionally check the result before the first scheduled run:
-   `docker exec <container> sh /opt/run.sh backup` and look at `/var/log/cron.log`.
+3. Check the result before the first scheduled run, either with
+   `RUN_ON_STARTUP=true` on the container, or with
+   `docker exec <container> sh /opt/run.sh backup` followed by `docker logs <container>`.
+   Adding `GCSOPTIONS=-n` for that first run makes it a dry run.
 
 If any of the removed variables are still set, the container stops at startup with these
 instructions rather than running a backup that cannot authenticate.
 
-Staying on 1.x is also an option: the `V1.3` tag keeps working with HMAC keys, and gsutil itself
-keeps working until Google removes it in March 2027.
+Staying on 1.x is also an option: `vinid223/gcloud-storage-backup:V1.3` keeps working with HMAC keys,
+and gsutil itself keeps working until Google removes it in March 2027.
+
+## Development
+
+```
+docker build -t gcloud-storage-backup .
+```
+
+`tests/` holds two suites - a fast one that asserts the exact command the image builds, and an
+end-to-end one that runs real transfers against a local Google Cloud Storage stand-in. See
+[`tests/README.md`](tests/README.md). CI runs the fast one on every push, plus `shellcheck` and
+`hadolint`; the end-to-end suite is meant to be run locally before a release.
 
 ## Inspiration
 https://github.com/joch/docker-s3backup
