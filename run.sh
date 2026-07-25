@@ -9,6 +9,7 @@
 #                 `docker exec <container> sh /opt/run.sh backup`
 #   healthcheck - report whether the last completed backup succeeded. Used by the
 #                 image HEALTHCHECK; exits 1 once a backup has failed.
+#   help        - print the settings reference and exit.
 #
 # Plain POSIX shell on purpose: the image has no bash, only busybox ash.
 
@@ -72,6 +73,113 @@ log_info()
 shquote()
 {
     printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# For the help menu: show a value, or say so when there is none.
+or_unset()
+{
+    if [ -n "$1" ]; then
+      printf '%s' "$1"
+    else
+      printf '(not set)'
+    fi
+}
+
+# Every setting, its accepted values, and what this container resolved it to.
+# Printed at each start before anything can fail, so the log of a container that
+# refused to start still says what it was looking for. Not printed by `backup`,
+# which would repeat it into the log on every scheduled run.
+print_help()
+{
+    cat <<HELP
+======================================================================
+ gcloud-storage-docker - backs up /data to Google Cloud Storage
+======================================================================
+ Mount the directories to back up under /data. Authentication is a
+ service account JSON key file, mounted anywhere and pointed at by
+ SERVICE_ACCOUNT_FILE.
+
+ SETTINGS                            "now:" is the value in use here
+
+ SERVICE_ACCOUNT_FILE  REQUIRED
+   Path inside the container to a mounted service account JSON key.
+   now: $(or_unset "$SERVICE_ACCOUNT_FILE")
+
+ GCSPATH               REQUIRED
+   Destination bucket, with an optional path inside it.
+   ex: gs://my-backup-bucket/  or  gs://my-backup-bucket/hostname/
+   now: $(or_unset "$GCSPATH")
+
+ CRON_SCHEDULE         default: 0 * * * *   (hourly, at minute 0)
+   Five cron fields, or an @macro: @hourly @daily @weekly @monthly
+   @yearly. Evaluated in TZ.  ex: 0 3 * * *  is 03:00 every day.
+   now: $CRON_SCHEDULE
+
+ TZ                    default: UTC
+   Any zoneinfo name, and it applies to both the schedule and the log
+   timestamps.  ex: America/Montreal.  Unknown names fall back to UTC.
+   now: $TZ
+
+ GCSOPTIONS            default: (none)
+   Extra flags for the transfer. Values are listed below.
+   now: $(or_unset "$GCSOPTIONS")
+
+ PROJECT_ID            default: (none)
+   GCP project, needed only if your bucket requires one to be set.
+   now: $(or_unset "$PROJECT_ID")
+
+ RUN_ON_STARTUP        default: false
+   true, 1, yes or on - run one backup as soon as the container starts
+   instead of waiting for the first scheduled run.
+   now: $RUN_ON_STARTUP
+
+ LOG_MAX_BYTES         default: 10485760   (10 MB)
+   Trim the log to its most recent half once it grows past this many
+   bytes.  0 keeps it forever.
+   now: $LOG_MAX_BYTES
+
+ GCSOPTIONS VALUES              the 1.x gsutil short forms still work
+
+   -d    --delete-unmatched-destination-objects
+                          also delete bucket objects that no longer
+                          exist under /data
+   -n    --dry-run        report what would happen, transfer nothing
+   -C    --continue-on-error
+                          carry on after an individual file fails
+   -x P  --exclude P      skip paths matching the regular expression P
+   -e    --ignore-symlinks
+                          do not follow symlinks (default: follow)
+   -r -R -m               accepted and ignored: the transfer is
+                          already recursive and parallel
+
+   Anything else is handed to 'gcloud storage rsync' unchanged, so any
+   of its flags can be used directly. Quote a value containing a
+   space:   GCSOPTIONS="-x 'my notes'"
+
+ COMMANDS
+
+   setup         validate, install the schedule, run cron  (default)
+   backup        run one backup now, outside the schedule:
+                   docker exec <container> sh /opt/run.sh backup
+                 exits non-zero if the backup failed
+   healthcheck   report the last backup's outcome
+   help          print this and exit
+
+ ALSO WORTH KNOWING
+
+   /var/log/cron.log   the backup log, also streamed to the container's
+                       stdout, so 'docker logs -f' follows it
+   docker ps           reports 'unhealthy' once a backup has failed
+   gcloud auth list    says "no credentialed accounts" even when auth
+                       works: the key file is used directly
+
+ REMOVED IN 2.0
+
+   ACCESS_KEY, SECRET_KEY and BOTO_FILE. HMAC keys cannot be used by
+   'gcloud storage'; use SERVICE_ACCOUNT_FILE. See "Migrating from
+   1.x" in the README.
+======================================================================
+HELP
 }
 
 # Apply $TZ. musl resolves the TZ variable on its own, but crond only re-reads
@@ -284,11 +392,30 @@ if [ "$OPTION" = "healthcheck" ]; then
   exit 1
 fi
 
+# Asked for explicitly. Nothing is validated first, so it answers "what can I
+# set?" even with no configuration at all: `docker run --rm <image> help`.
+case "$OPTION" in
+    help|--help|-h)
+        print_help
+        exit 0
+        ;;
+esac
+
 # Welcome
 echo "Welcome to Google Cloud Storage Docker"
 echo "A backup utility to GCP Bucket"
 
 setup_timezone
+
+# At container start, before any validation, so a container that goes on to
+# refuse to start still leaves the settings reference - and the values it
+# actually resolved - in its log. TZ is applied first so the value shown is the
+# one in effect. Left out of `backup`, which would otherwise repeat the whole
+# menu into the log on every scheduled run.
+if [ "$OPTION" = "setup" ]; then
+  print_help
+fi
+
 check_removed_credentials
 configure_gcloud_env
 
@@ -462,6 +589,8 @@ elif [ "$OPTION" = "backup" ]; then
   exit "$STATUS"
 else
   log_info "Unsupported option: $OPTION"
-  log_info "See documentation on available options."
+  echo "Unsupported option: $OPTION"
+  echo ""
+  print_help
   exit 1
 fi

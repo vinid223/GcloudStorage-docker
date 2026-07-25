@@ -530,6 +530,108 @@ case_setup_reports_the_service_account() {
 }
 
 # ---------------------------------------------------------------------------
+# Cases: the help menu
+# ---------------------------------------------------------------------------
+
+case_help_command_prints_the_menu() {
+    out=$(in_image 'sh /opt/run.sh help; echo "__STATUS__:$?"')
+    expect_contains "$out" "__STATUS__:0" "help output" || return 1
+    expect_contains "$out" "SETTINGS" "help output" || return 1
+    expect_contains "$out" "GCSOPTIONS VALUES" "help output" || return 1
+    expect_contains "$out" "COMMANDS" "help output" || return 1
+    # Every setting has to be listed.
+    for v in SERVICE_ACCOUNT_FILE GCSPATH CRON_SCHEDULE TZ GCSOPTIONS \
+             PROJECT_ID RUN_ON_STARTUP LOG_MAX_BYTES; do
+        expect_contains "$out" "$v" "help output" || return 1
+    done
+}
+
+case_help_accepts_flag_spellings() {
+    for arg in --help -h; do
+        out=$(in_image "sh /opt/run.sh $arg; echo \"__STATUS__:\$?\"")
+        expect_contains "$out" "__STATUS__:0" "help output for $arg" || return 1
+        expect_contains "$out" "SETTINGS" "help output for $arg" || return 1
+    done
+}
+
+# The point of printing it at startup: a container that refuses to start still
+# says what it was looking for.
+case_help_shown_when_configuration_is_missing() {
+    out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' -e GCSPATH=)
+    expect_contains "$out" "SETTINGS" "setup output" || return 1
+    expect_contains "$out" "GCSPATH required" "setup output" || return 1
+    expect_contains "$out" "__STATUS__:1" "setup output" || return 1
+}
+
+case_help_shown_when_credentials_are_legacy() {
+    out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' \
+        -e GCSPATH=gs://bucket/ -e ACCESS_KEY=k -e SECRET_KEY=s)
+    expect_contains "$out" "SETTINGS" "setup output" || return 1
+    expect_contains "$out" "no longer supported as of version 2.0" "setup output" || return 1
+    expect_contains "$out" "__STATUS__:1" "setup output" || return 1
+}
+
+case_help_shown_on_a_bad_schedule() {
+    out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' \
+        -e GCSPATH=gs://bucket/ -e CRON_SCHEDULE="0 3 * *")
+    expect_contains "$out" "SETTINGS" "setup output" || return 1
+    expect_contains "$out" "CRON_SCHEDULE must have 5 fields" "setup output" || return 1
+}
+
+case_help_shown_on_a_successful_start() {
+    out=$(setup_dry 'true' -e CRON_SCHEDULE="*/17 * * * *")
+    expect_contains "$out" "SETTINGS" "setup output" || return 1
+    expect_contains "$out" "SETUP_DONE" "setup output" || return 1
+}
+
+case_help_reports_the_effective_values() {
+    out=$(in_image 'sh /opt/run.sh setup' \
+        -e GCSPATH=gs://real-bucket/sub/ -e TZ=America/Montreal \
+        -e GCSOPTIONS=-d -e PROJECT_ID=my-proj -e RUN_ON_STARTUP=true \
+        -e LOG_MAX_BYTES=0 -e CRON_SCHEDULE=@daily)
+    expect_contains "$out" "now: gs://real-bucket/sub/" "help output" || return 1
+    expect_contains "$out" "now: America/Montreal" "help output" || return 1
+    expect_contains "$out" "now: -d" "help output" || return 1
+    expect_contains "$out" "now: my-proj" "help output" || return 1
+    expect_contains "$out" "now: true" "help output" || return 1
+    expect_contains "$out" "now: 0" "help output" || return 1
+    expect_contains "$out" "now: @daily" "help output" || return 1
+    # An unset optional setting says so rather than showing an empty line.
+    expect_contains "$out" "now: (not set)" "help output" || return 1
+}
+
+# A rejected timezone falls back to UTC, so the menu must show UTC and not the
+# value that was asked for.
+case_help_shows_the_timezone_actually_applied() {
+    out=$(in_image 'sh /opt/run.sh setup' -e GCSPATH=gs://bucket/ -e TZ=Mars/Olympus_Mons)
+    expect_contains "$out" "Unknown timezone" "setup output" || return 1
+    expect_contains "$out" "now: UTC" "help output" || return 1
+}
+
+case_help_shown_for_an_unsupported_option() {
+    out=$(in_image 'sh /opt/run.sh frobnicate; echo "__STATUS__:$?"')
+    expect_contains "$out" "Unsupported option: frobnicate" "output" || return 1
+    expect_contains "$out" "SETTINGS" "output" || return 1
+    expect_contains "$out" "__STATUS__:1" "output" || return 1
+}
+
+# It must NOT be printed by a backup: cron runs one every hour, and the whole
+# menu in the log each time would bury the transfer output.
+case_help_not_printed_by_a_backup() {
+    out=$(backup_argv "")
+    expect_not_contains "$out" "SETTINGS" "cron.log" || return 1
+    expect_not_contains "$out" "GCSOPTIONS VALUES" "cron.log" || return 1
+    expect_contains "$out" "ARGV: storage rsync" "cron.log" || return 1
+}
+
+# The healthcheck's output is what `docker inspect` shows, so it stays a line.
+case_help_not_printed_by_the_healthcheck() {
+    out=$(in_image 'sh /opt/run.sh healthcheck')
+    expect_not_contains "$out" "SETTINGS" "healthcheck output" || return 1
+    expect_contains "$out" "no backup has completed yet" "healthcheck output" || return 1
+}
+
+# ---------------------------------------------------------------------------
 # Cases: image contents
 # ---------------------------------------------------------------------------
 
@@ -672,6 +774,19 @@ run_case "setup: a real variable beats the env file"          case_setup_env_fil
 run_case "setup: RUN_ON_STARTUP runs a backup"                case_setup_runs_backup_on_startup_when_asked
 run_case "setup: no startup backup by default"                case_setup_does_not_run_backup_by_default
 run_case "setup: reports the service account and the caveat"  case_setup_reports_the_service_account
+
+printf -- '\n--- help menu ---\n'
+run_case "help: the help command prints the menu"             case_help_command_prints_the_menu
+run_case "help: --help and -h work too"                       case_help_accepts_flag_spellings
+run_case "help: shown when configuration is missing"          case_help_shown_when_configuration_is_missing
+run_case "help: shown when credentials are legacy"            case_help_shown_when_credentials_are_legacy
+run_case "help: shown on a malformed schedule"                case_help_shown_on_a_bad_schedule
+run_case "help: shown on a successful start"                  case_help_shown_on_a_successful_start
+run_case "help: reports the effective values"                 case_help_reports_the_effective_values
+run_case "help: shows the timezone actually applied"          case_help_shows_the_timezone_actually_applied
+run_case "help: shown for an unsupported option"              case_help_shown_for_an_unsupported_option
+run_case "help: not printed by a backup"                      case_help_not_printed_by_a_backup
+run_case "help: not printed by the healthcheck"               case_help_not_printed_by_the_healthcheck
 
 printf -- '\n--- image ---\n'
 run_case "image: gsutil is absent"                            case_image_gsutil_absent
