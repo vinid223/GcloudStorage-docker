@@ -41,9 +41,56 @@ env:
   REGISTRY: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}
   # Forgejo registry image, e.g. forge.vinid223.ca/vinid223/gcloudstorage-docker
   IMAGE: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}/${{ github.repository }}
+  # Architectures to publish. Defaults to amd64 only, which is what the runner
+  # builds natively; see "Publishing arm64" in .forgejo/workflows/README.md
+  # before setting the PLATFORMS variable to anything wider.
+  PLATFORMS: ${{ vars.PLATFORMS || 'linux/amd64' }}
 
 jobs:
+  # Cheap checks first, so an obvious mistake fails in seconds instead of after
+  # the ~150 MB CLI download. Both linters read the file from stdin: a path
+  # inside this job container means nothing to the host Docker daemon the socket
+  # points at, so bind-mounting the workspace would hand them an empty directory.
+  lint:
+    runs-on: linux-amd64
+    container:
+      image: docker:cli
+    timeout-minutes: 10
+    steps:
+      - name: Bootstrap node (checkout is a JS action)
+        run: apk add --no-cache nodejs
+
+      - uses: actions/checkout@v6
+
+      # run.sh is POSIX sh (the image has no bash), so it is checked as such.
+      - name: Lint shell scripts (shellcheck)
+        run: |
+          status=0
+          for f in run.sh tests/smoke.sh; do
+            echo "--- $f"
+            docker run --rm -i koalaman/shellcheck:stable \
+              --severity=warning -s sh - < "$f" || status=1
+          done
+          echo "--- tests/run-tests.sh (bash)"
+          docker run --rm -i koalaman/shellcheck:stable \
+            --severity=warning - < tests/run-tests.sh || status=1
+          exit $status
+
+      # Ignored rules, all deliberate:
+      #   DL3048 - the AUTHOR label predates the OCI naming convention and is
+      #            kept so existing tooling that reads it keeps working.
+      #   DL3018 - pinning apk versions makes builds fail as soon as Alpine
+      #            drops the exact version from its repository.
+      #   DL4006 - the one pipe in the file already ends in the command whose
+      #            status matters, and it is followed by an explicit || branch.
+      - name: Lint Dockerfile (hadolint)
+        run: |
+          docker run --rm -i hadolint/hadolint hadolint \
+            --ignore DL3048 --ignore DL3018 --ignore DL4006 \
+            --failure-threshold warning - < Dockerfile
+
   build:
+    needs: lint
     runs-on: linux-amd64
     container:
       image: docker:cli
@@ -68,6 +115,20 @@ jobs:
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             -t "${IMAGE}:${{ github.sha }}" .
+
+      # Exercise the image before anything is published. These cases cover the
+      # GCSOPTIONS translation table, the configuration checks, the lock, the log
+      # and the healthcheck, all against a stub `gcloud` that reports the exact
+      # command run.sh built — so a wrong flag or a swallowed exit status fails
+      # here rather than silently on somebody's backup schedule.
+      #
+      # tests/run-tests.sh (the fake-gcs-server end-to-end suite) is not run
+      # here: it bind-mounts host directories, which a job container driving the
+      # host daemon through a socket cannot do. Run it locally instead.
+      - name: Run smoke tests
+        env:
+          IMAGE_UNDER_TEST: ${{ env.IMAGE }}:${{ github.sha }}
+        run: IMAGE="$IMAGE_UNDER_TEST" sh tests/smoke.sh
 
       # Scan the locally-built image for vulnerabilities. Non-blocking
       # (--exit-code 0) — flip to 1 to fail the build on HIGH/CRITICAL findings.
@@ -97,42 +158,70 @@ jobs:
                 -u "${{ secrets.REGISTRY_USERNAME || github.repository_owner }}" \
                 --password-stdin
 
-      # On a pull request, publish a throwaway :pr-<number> tag so the built
-      # image can be pulled/tested for that PR. Overwritten on each new push.
-      - name: Push :pr-<number> to Forgejo registry (pull request)
-        if: github.event_name == 'pull_request'
+      # Which tags this event publishes, decided in one place so the two publish
+      # paths below cannot disagree:
+      #   pull request     -> :pr-<number>, a throwaway tag for testing that PR's
+      #                       image, overwritten on each new push. No :<sha>.
+      #   push to master   -> :<sha> and :latest. :latest is the single source the
+      #                       Docker Hub workflow publishes from, so master HEAD
+      #                       must always be what :latest is.
+      #   git tag          -> :<sha> and :<tag>. Deliberately NOT :latest — master
+      #                       owns that, and release tags are created by the
+      #                       Docker Hub workflow *after* it shipped that :latest.
+      #   manual dispatch  -> :<sha> and the requested :<custom_tag>.
+      - name: Decide which tags to publish
         run: |
-          pr="pr-${{ github.event.number }}"
-          docker tag "${IMAGE}:${{ github.sha }}" "${IMAGE}:${pr}"
-          docker push "${IMAGE}:${pr}"
+          set -eu
+          tags=""
+          case "${{ github.event_name }}" in
+            pull_request)
+              tags="pr-${{ github.event.number }}"
+              ;;
+            workflow_dispatch)
+              tags="${{ github.sha }} ${{ inputs.custom_tag }}"
+              ;;
+            *)
+              tags="${{ github.sha }}"
+              case "${{ github.ref }}" in
+                refs/heads/master) tags="$tags latest" ;;
+                refs/tags/*)       tags="$tags ${{ github.ref_name }}" ;;
+              esac
+              ;;
+          esac
+          echo "TAGS=$tags" >> "$GITHUB_ENV"
+          echo "publishing: $tags"
 
-      - name: Push :<sha> to Forgejo registry
-        if: github.event_name != 'pull_request'
-        run: docker push "${IMAGE}:${{ github.sha }}"
-
-      # deploy_latest: every push to master moves :latest. This is the single
-      # source the Docker Hub workflow publishes from — it takes no inputs, it
-      # always ships `:latest` — so master HEAD must always be what :latest is.
-      - name: Push :latest (push to master)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      # Default path: retag and push the image that was just built, tested and
+      # scanned, so exactly those bytes are what ships.
+      - name: Push tags (single architecture)
+        if: env.PLATFORMS == 'linux/amd64'
         run: |
-          docker tag "${IMAGE}:${{ github.sha }}" "${IMAGE}:latest"
-          docker push "${IMAGE}:latest"
+          set -eu
+          for t in $TAGS; do
+            docker tag "${IMAGE}:${{ github.sha }}" "${IMAGE}:${t}"
+            docker push "${IMAGE}:${t}"
+          done
 
-      # deploy_tag (GitLab `only: tags`): publish :<tag>. It does NOT touch
-      # :latest — master owns that, and release tags are created by the Docker
-      # Hub workflow *after* it has already shipped the current :latest.
-      - name: Publish tag (on git tag)
-        if: startsWith(github.ref, 'refs/tags/')
+      # Opt-in path, used only when the PLATFORMS variable asks for more than
+      # amd64. A multi-architecture image cannot be loaded into the local image
+      # store, so buildx builds and pushes it in one go; that means a second
+      # build of amd64 (served from the layer cache) plus a build of every other
+      # architecture. Read "Publishing arm64" in the workflows README first: the
+      # runner needs binfmt/QEMU, and an emulated build of this image is slow
+      # enough that the job timeout above usually has to go up.
+      - name: Push tags (multi-architecture)
+        if: env.PLATFORMS != 'linux/amd64'
         run: |
-          ref="${{ github.ref_name }}"
-          docker tag "${IMAGE}:${{ github.sha }}" "${IMAGE}:${ref}"
-          docker push "${IMAGE}:${ref}"
-
-      # deploy_schedule_tag (GitLab `$CUSTOM_TAG`): manual run with a custom tag.
-      - name: Publish custom tag (manual dispatch)
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          ct="${{ inputs.custom_tag }}"
-          docker tag "${IMAGE}:${{ github.sha }}" "${IMAGE}:${ct}"
-          docker push "${IMAGE}:${ct}"
+          set -eu
+          docker run --privileged --rm tonistiigi/binfmt --install all
+          docker buildx create --use --name multiarch --driver docker-container
+          tag_args=""
+          for t in $TAGS; do
+            tag_args="$tag_args -t ${IMAGE}:${t}"
+          done
+          # shellcheck disable=SC2086
+          docker buildx build \
+            --platform "${PLATFORMS}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            $tag_args --push .

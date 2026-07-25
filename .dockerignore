@@ -1,0 +1,9 @@
+# Only run.sh is copied into the image, so everything else is build context sent
+# to the daemon for nothing. .git in particular grows the context for every build.
+.git
+.gitignore
+.forgejo
+tests
+CHANGELOG
+LICENSE
+README.md

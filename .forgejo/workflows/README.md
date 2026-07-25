@@ -9,7 +9,21 @@ Docker Hub release).
 Triggers: `pull_request` → `master`, `push` → `master` and tags (`*`),
 and `workflow_dispatch` (with a `custom_tag` input).
 
-Single `build` job, running in the **`docker:cli`** container:
+Two jobs, both running in the **`docker:cli`** container:
+
+1. **`lint`** — `shellcheck` on `run.sh`, `tests/smoke.sh` and
+   `tests/run-tests.sh`, plus `hadolint` on the `Dockerfile`. Seconds, and it
+   gates the build so an obvious mistake doesn't wait on a ~150 MB download.
+2. **`build`** — build, **test**, scan, publish.
+
+Both linters read their input from **stdin** (`docker run -i ... - < file`)
+rather than from a bind mount. That is not a style choice: the job runs in a
+container that drives the *host* Docker daemon through a mounted socket, so a
+path inside the job container means nothing to that daemon and
+`-v "$PWD:/mnt"` would hand the linter an empty directory. The same constraint
+is why `tests/run-tests.sh` cannot run here (see below).
+
+The `build` job publishes as follows:
 
 | Event | Behaviour |
 |-------|-----------|
@@ -28,11 +42,75 @@ would be redundant at best and (for a tag cut on an older commit) wrong.
 Every build stamps `org.opencontainers.image.revision=<sha>` into the image;
 `dockerhub.yml` reads it back to find the commit that `:latest` was built from.
 
+The tag list for an event is computed in one step (`Decide which tags to
+publish`) and consumed by whichever publish path applies, so the two cannot drift
+apart.
+
 All pushes go to the Forgejo container registry only. **Docker Hub is never
 published automatically** — see `dockerhub.yml` below.
 
 This collapses the old GitLab `build` / `deploy_tag` / `deploy_latest` /
 `deploy_schedule_tag` jobs into one build with conditional publish steps.
+
+### Tests
+
+After the build and **before anything is published**, the job runs
+`tests/smoke.sh` against the image it just built. Those cases replace `gcloud`
+with a stub that prints the exact argv it was handed, so the `GCSOPTIONS`
+translation table, the configuration checks, the lock, the log trimming, the exit
+statuses and the healthcheck are all asserted directly. One case greps
+`gcloud storage rsync --help` for every flag the translator can emit, so bumping
+`GCLOUD_VERSION` to a CLI that renamed or dropped a flag fails the build instead
+of failing somebody's backup schedule.
+
+`tests/run-tests.sh` — the end-to-end suite that runs real transfers against
+fake-gcs-server — is **not** run in CI. It bind-mounts host directories for
+`/data`, the bucket seed and the secrets, which a job container driving the host
+daemon through a socket cannot do. Run it locally before releasing; see
+[`tests/README.md`](../../tests/README.md).
+
+### Publishing arm64
+
+The `Dockerfile` handles `TARGETARCH` and builds for arm64, but CI publishes
+**amd64 only** by default: the runner is amd64 and a plain `docker build` produces
+a single-architecture image.
+
+To publish more, set the repository variable `PLATFORMS`, e.g.
+`linux/amd64,linux/arm64`. The job then switches to a `docker buildx` path that
+builds and pushes a multi-architecture manifest in one step (a multi-arch image
+cannot be loaded into the local image store, so it cannot be built first and
+retagged afterwards).
+
+Before setting it:
+
+- The runner needs **binfmt/QEMU** for the foreign architecture. The workflow
+  installs it with `docker run --privileged --rm tonistiigi/binfmt --install all`,
+  which requires the daemon to allow privileged containers.
+- Every architecture is **rebuilt** (amd64 comes from the layer cache; the rest
+  do not), and the arm64 build runs under emulation. The gcloud CLI's
+  `install.sh` byte-compiles the whole CLI, which is slow enough emulated that
+  `timeout-minutes: 60` on the job usually has to go up.
+- Tests and the Trivy scan still run against the natively built amd64 image.
+
+
+One more thing to change before arm64 reaches Docker Hub: `dockerhub.yml`
+publishes with `docker pull` + `docker tag` + `docker push`, and a plain `pull`
+resolves a multi-architecture manifest down to the **runner's own
+architecture** — so Docker Hub would quietly keep getting amd64 only. Copying the
+whole manifest instead needs `buildx`:
+
+```sh
+docker buildx imagetools create \
+  -t "vinid223/gcloud-storage-backup:${version}" \
+  -t "vinid223/gcloud-storage-backup:latest" \
+  "${IMAGE}:latest"
+```
+
+That is left as-is for now because `PLATFORMS` defaults to amd64, where pull and
+retag is correct and keeps the published image byte-identical to the one that was
+tested and scanned. Note that `imagetools create` copies without pulling, so the
+`org.opencontainers.image.revision` label the release step reads would have to be
+fetched separately (`docker buildx imagetools inspect --raw`).
 
 ## `dockerhub.yml` — Docker Hub release + Forgejo release
 
@@ -91,9 +169,15 @@ A `concurrency` group with `cancel-in-progress: false` serializes runs, since
 two concurrent ones would race on the version number.
 
 ### Runner requirements
-- **No buildx/dind.** The Forgejo runner has no in-job Docker CLI, but the host
-  Docker socket is **auto-mounted** into job containers. The job uses the
-  `docker:cli` image and the plain `docker` client against that daemon.
+- **No dind.** The Forgejo runner has no in-job Docker CLI, but the host Docker
+  socket is **auto-mounted** into job containers. The jobs use the `docker:cli`
+  image and the plain `docker` client against that daemon. `docker:cli` does ship
+  the `compose` and `buildx` plugins, which is what makes the optional multi-arch
+  path possible.
+- Because that daemon is on the host, **no job can bind-mount its own
+  workspace** — paths inside the job container do not exist for the daemon. Both
+  linters therefore read from stdin, and the end-to-end test suite runs locally
+  rather than in CI.
 - Node is `apk add`-ed first because Forgejo runs JS actions (`checkout`) with
   node inside the container.
 
@@ -103,17 +187,35 @@ two concurrent ones would race on the version number.
   - `REGISTRY_USERNAME` (optional) — the user that owns `REGISTRY_TOKEN`. Defaults to `github.repository_owner` (`vinid223`); only set it if the PAT belongs to a different account.
   - `DOCKER_HUB_USERNAME`, `DOCKER_HUB_PASSWORD` — Docker Hub (an access token is recommended over a password). Used by `dockerhub.yml` only.
   - `RELEASE_TOKEN` (optional) — PAT with repo write, used for creating the tag/release in `dockerhub.yml`. Falls back to the automatic `GITHUB_TOKEN`, which normally works for the repo API.
-- Variables: `REGISTRY` (defaults to `forge.vinid223.ca`).
+- Variables:
+  - `REGISTRY` (defaults to `forge.vinid223.ca`).
+  - `PLATFORMS` (defaults to `linux/amd64`) — architectures to publish. See
+    [Publishing arm64](#publishing-arm64) before widening it.
 
 > **Why not `GITHUB_TOKEN`?** Forgejo's automatic per-run token **cannot** authenticate against the package registry — `docker login`/`docker push` fails with `unauthorized: reqPackageAccess` no matter what `permissions:` the workflow declares ([forgejo/forgejo#3571](https://codeberg.org/forgejo/forgejo/issues/3571), [#6904](https://codeberg.org/forgejo/forgejo/issues/6904)). A PAT is the supported workaround until that feature lands.
 
 ## Optimizations & conventions
 - **Concurrency:** a newer push to a ref cancels the in-progress run (tags are unique, so releases are never cancelled).
 - **Docker:** built with `DOCKER_BUILDKIT=1`; the host daemon keeps a local layer cache across runs.
+- **Linting:** `shellcheck` at `--severity=warning`, `hadolint` at
+  `--failure-threshold warning`. Three hadolint rules are ignored deliberately
+  (`DL3048` the legacy `AUTHOR` label, `DL3018` apk version pinning, `DL4006`
+  pipefail) — the reasons are in the workflow next to the flags.
 - **Image scanning:** the built image is scanned with **Trivy** (`HIGH,CRITICAL`, `--ignore-unfixed`), currently **non-blocking** (`--exit-code 0`) — flip to `1` to fail on findings.
 - **Action versions:** `actions/checkout@v6` (latest). Latest majors work on this instance (except `actions/upload-artifact`, which this workflow doesn't use).
 
 ## Run locally
 ```bash
+# build
 docker build -t gcloud-storage-backup .
+
+# the checks CI runs
+docker run --rm -i koalaman/shellcheck:stable --severity=warning -s sh - < run.sh
+docker run --rm -i hadolint/hadolint hadolint \
+  --ignore DL3048 --ignore DL3018 --ignore DL4006 \
+  --failure-threshold warning - < Dockerfile
+IMAGE=gcloud-storage-backup tests/smoke.sh
+
+# the end-to-end suite CI cannot run (real transfers, ~5 min)
+tests/run-tests.sh
 ```

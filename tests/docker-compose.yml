@@ -1,0 +1,78 @@
+# Test stack: the backup image under test plus a local Google Cloud Storage
+# equivalent (fake-gcs-server), so backup behaviour can be verified without a
+# real GCP project and without real credentials.
+#
+# Everything is driven by tests/run-tests.sh, which creates the work directory
+# and exports TEST_WORK_DIR. To poke at the stack by hand:
+#
+#   export TEST_WORK_DIR=/tmp/gcsbackup-work
+#   mkdir -p "$TEST_WORK_DIR"/data "$TEST_WORK_DIR"/buckets/testbucket "$TEST_WORK_DIR"/secrets
+#   docker compose -f tests/docker-compose.yml up -d fakegcs client
+#   docker compose -f tests/docker-compose.yml exec client gcloud storage ls -r gs://testbucket/
+#
+name: gcsbackup-tests
+
+# $TEST_WORK_DIR holds the three mutable trees the stack uses:
+#   data/     -> /data in the backup container (the files that get backed up)
+#   buckets/  -> /data in fake-gcs-server (one subdirectory per bucket, seed only)
+#   secrets/  -> /secrets in the backup container (fake service account keys)
+x-work-dir: &work-dir ${TEST_WORK_DIR:?TEST_WORK_DIR must point at the test work directory - use tests/run-tests.sh}
+
+x-gcloud-env: &gcloud-env
+  SERVICE_ACCOUNT_FILE: /secrets/sa.json
+  GCSPATH: gs://testbucket/
+  # Send every storage API call to the fake server instead of googleapis.com.
+  CLOUDSDK_API_ENDPOINT_OVERRIDES_STORAGE: http://fakegcs:4443/storage/v1/
+  # The fake server ignores credentials, and this keeps the suite offline. Cases
+  # that must exercise the real credential code path unset it explicitly.
+  CLOUDSDK_AUTH_DISABLE_CREDENTIALS: "true"
+  CLOUDSDK_CORE_PROJECT: test
+
+services:
+  # Local stand-in for Google Cloud Storage. Each subdirectory of the mounted
+  # /data becomes a bucket (/data/testbucket -> gs://testbucket). That directory
+  # is only read at startup: live state lives in the server's memory, so tests
+  # re-create this container to reset bucket state and always assert through
+  # `gcloud storage ls`, never by listing the host directory.
+  fakegcs:
+    image: fsouza/fake-gcs-server:latest
+    platform: linux/amd64
+    command:
+      - -scheme
+      - http
+      - -port
+      - "4443"
+      - -external-url
+      - http://fakegcs:4443
+      - -public-host
+      - fakegcs:4443
+    volumes:
+      - ${TEST_WORK_DIR:?}/buckets:/data
+
+  # The image under test. run-tests.sh starts it per case, either detached (the
+  # real `setup` entrypoint, with crond) or one-shot with `docker compose run`.
+  backup:
+    build:
+      context: ..
+    platform: linux/amd64
+    depends_on:
+      - fakegcs
+    environment: *gcloud-env
+    volumes:
+      - ${TEST_WORK_DIR:?}/data:/data
+      - ${TEST_WORK_DIR:?}/secrets:/secrets:ro
+
+  # Long-lived helper used for assertions: same image, so the CLI version and
+  # the endpoint override are exactly what the backup uses, but idle, so that
+  # `docker compose exec client gcloud storage ...` costs no container startup.
+  client:
+    build:
+      context: ..
+    platform: linux/amd64
+    depends_on:
+      - fakegcs
+    environment: *gcloud-env
+    volumes:
+      - ${TEST_WORK_DIR:?}/data:/data
+      - ${TEST_WORK_DIR:?}/secrets:/secrets:ro
+    entrypoint: ["tail", "-f", "/dev/null"]
