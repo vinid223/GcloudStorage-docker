@@ -175,9 +175,13 @@ print_help()
 
  REMOVED IN 2.0
 
-   ACCESS_KEY, SECRET_KEY and BOTO_FILE. HMAC keys cannot be used by
-   'gcloud storage'; use SERVICE_ACCOUNT_FILE. See "Migrating from
-   1.x" in the README.
+   ACCESS_KEY, SECRET_KEY and BOTO_FILE. Google is retiring gsutil,
+   the tool 1.x transferred files with, and removes it from the Cloud
+   CLI after March 2027; backups now use its replacement, 'gcloud
+   storage'. That tool talks to the JSON API, which HMAC keys cannot
+   sign, so authentication moved to SERVICE_ACCOUNT_FILE. Setting any
+   of the three prints full migration instructions. See "Migrating
+   from 1.x" in the README.
 ======================================================================
 HELP
 }
@@ -241,23 +245,70 @@ check_removed_credentials()
 
     # Leftovers in an otherwise migrated configuration: harmless, just noise.
     if [ -n "$SERVICE_ACCOUNT_FILE" ]; then
-      echo "WARNING: ACCESS_KEY, SECRET_KEY and BOTO_FILE are ignored as of version 2.0. SERVICE_ACCOUNT_FILE is used instead; you can remove them from your configuration."
+      echo ""
+      echo "WARNING: ACCESS_KEY, SECRET_KEY and BOTO_FILE are ignored as of version 2.0."
+      echo "They configured gsutil, which Google is retiring - see below - so backups now"
+      echo "run 'gcloud storage' and authenticate with SERVICE_ACCOUNT_FILE instead, which"
+      echo "is already set. You can remove the three old variables from your configuration."
+      echo ""
       return
     fi
 
-    echo ""
-    echo "ACCESS_KEY, SECRET_KEY and BOTO_FILE are no longer supported as of version 2.0."
-    echo ""
-    echo "This image now backs up with 'gcloud storage', which authenticates through the JSON"
-    echo "API. HMAC keys only work with the XML API, so they cannot be used anymore."
-    echo ""
-    echo "To migrate:"
-    echo "  1. Create a service account with access to your bucket (role Storage Object Admin)."
-    echo "  2. Create a JSON key for it and mount the file in this container."
-    echo "  3. Replace ACCESS_KEY/SECRET_KEY (or BOTO_FILE) with SERVICE_ACCOUNT_FILE=/path/to/key.json"
-    echo ""
-    echo "Version 1.3 keeps working with HMAC keys if you need more time: vinid223/gcloud-storage-backup:V1.3"
-    echo ""
+    cat <<'MIGRATE'
+
+======================================================================
+ Version 1.x configuration detected - this needs one change
+======================================================================
+ This container cannot start as configured: ACCESS_KEY, SECRET_KEY and
+ BOTO_FILE are no longer supported as of version 2.0.
+
+ WHY THIS CHANGED
+
+ Google is retiring gsutil, the tool version 1.x used to transfer your
+ files. It is deprecated, and Google removes it from the Google Cloud
+ CLI after March 2027. Backups therefore run 'gcloud storage' now,
+ which is Google's supported replacement for it.
+
+ That is also what forces your credentials to change. gsutil signed
+ requests to the Cloud Storage XML API, and HMAC keys - ACCESS_KEY and
+ SECRET_KEY, or the pair inside a BOTO_FILE - are the credentials for
+ that API. 'gcloud storage' uses the JSON API, which HMAC keys cannot
+ sign at all. There is no setting that keeps them working; the switch
+ to a service account key is unavoidable, not a preference.
+
+ HOW TO MIGRATE  (about five minutes)
+
+ 1. Create a service account, or reuse one: the HMAC keys you use
+    today already belong to a service account, and the console shows
+    which one under "Service account HMAC" in your bucket's
+    interoperability settings.
+ 2. Give it access to the bucket. "Storage Object Admin" covers
+    everything, including the deletions GCSOPTIONS=-d performs;
+    without -d, "Storage Object User" is enough.
+ 3. Create a JSON key for it (service account -> Keys -> Add key ->
+    Create new key -> JSON) and mount the downloaded file into this
+    container, read-only.
+ 4. Replace ACCESS_KEY and SECRET_KEY (or BOTO_FILE) with:
+      SERVICE_ACCOUNT_FILE=/path/to/key.json
+
+ Nothing else changes: /data, GCSPATH, GCSOPTIONS, CRON_SCHEDULE and
+ TZ all keep working exactly as they did. Full instructions are under
+ "Migrating from 1.x" in the README.
+
+ IF YOU NEED MORE TIME
+
+ vinid223/gcloud-storage-backup:V1.3 still uses gsutil and still
+ accepts HMAC keys. It will keep working until Google actually removes
+ gsutil, so pinning that tag buys time - but it is not a fix, and the
+ deadline above applies to it too.
+======================================================================
+MIGRATE
+
+    # Terminal on purpose: there is no configuration in which these variables
+    # work. Exiting here also keeps the generic "SERVICE_ACCOUNT_FILE must be
+    # set" message from trailing the explanation that just answered it.
+    echo "Exiting"
+    exit 1
 }
 
 # Point gcloud at the mounted key file. credential_file_override lets gcloud use

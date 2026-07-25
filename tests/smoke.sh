@@ -320,6 +320,54 @@ case_config_legacy_keys_are_rejected() {
         -e GCSPATH=gs://bucket/ -e ACCESS_KEY=k -e SECRET_KEY=s)
     expect_contains "$out" "no longer supported as of version 2.0" "setup output" || return 1
     expect_contains "$out" "__STATUS__:1" "setup output" || return 1
+    # The explanation answers the generic complaint, so it must not be followed
+    # by it as well.
+    expect_not_contains "$out" "SERVICE_ACCOUNT_FILE must be set" "setup output" || return 1
+}
+
+# Someone upgrading needs to know the switch was forced by Google retiring
+# gsutil, not chosen - otherwise the credential change looks arbitrary.
+case_config_legacy_keys_explain_the_deprecation() {
+    out=$(in_image 'sh /opt/run.sh setup' \
+        -e GCSPATH=gs://bucket/ -e ACCESS_KEY=k -e SECRET_KEY=s)
+    expect_contains "$out" "WHY THIS CHANGED" "setup output" || return 1
+    expect_contains "$out" "retiring gsutil" "setup output" || return 1
+    expect_contains "$out" "March 2027" "setup output" || return 1
+    expect_contains "$out" "gcloud storage" "setup output" || return 1
+    # And what to actually do about it.
+    expect_contains "$out" "HOW TO MIGRATE" "setup output" || return 1
+    expect_contains "$out" "SERVICE_ACCOUNT_FILE=/path/to/key.json" "setup output" || return 1
+    expect_contains "$out" "Storage Object Admin" "setup output" || return 1
+}
+
+# BOTO_FILE on its own has to trigger the same explanation.
+case_config_boto_file_explains_the_deprecation() {
+    out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' \
+        -e GCSPATH=gs://bucket/ -e BOTO_FILE=/tmp/boto)
+    expect_contains "$out" "retiring gsutil" "setup output" || return 1
+    expect_contains "$out" "March 2027" "setup output" || return 1
+    expect_contains "$out" "__STATUS__:1" "setup output" || return 1
+}
+
+# Already migrated, but the old variables are still lying around: that is a
+# warning, not a failure, and it should still say why they stopped mattering.
+case_config_legacy_leftovers_only_warn() {
+    out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' \
+        -e GCSPATH=gs://bucket/ -e SERVICE_ACCOUNT_FILE=/nope.json -e ACCESS_KEY=k)
+    expect_contains "$out" "WARNING: ACCESS_KEY, SECRET_KEY and BOTO_FILE are ignored" "setup output" || return 1
+    expect_contains "$out" "retiring" "setup output" || return 1
+    # It got past the credentials check and failed on the key file instead.
+    expect_contains "$out" "not found. Mount the service account key file" "setup output" || return 1
+    expect_not_contains "$out" "WHY THIS CHANGED" "setup output" || return 1
+}
+
+# The menu itself has to carry the reason too, for someone reading `help`
+# before they hit the error.
+case_help_explains_the_deprecation() {
+    out=$(in_image 'sh /opt/run.sh help')
+    expect_contains "$out" "REMOVED IN 2.0" "help output" || return 1
+    expect_contains "$out" "retiring gsutil" "help output" || return 1
+    expect_contains "$out" "March 2027" "help output" || return 1
 }
 
 # A malformed schedule is accepted by crond and then never fires, so it is
@@ -753,6 +801,9 @@ run_case "config: missing SERVICE_ACCOUNT_FILE exits 1"       case_config_missin
 run_case "config: key file path not found exits 1"            case_config_key_file_not_found
 run_case "config: file is not a key exits 1"                  case_config_key_file_not_a_key
 run_case "config: legacy HMAC keys exit 1"                    case_config_legacy_keys_are_rejected
+run_case "config: legacy keys explain the deprecation"        case_config_legacy_keys_explain_the_deprecation
+run_case "config: BOTO_FILE explains the deprecation"         case_config_boto_file_explains_the_deprecation
+run_case "config: migrated leftovers only warn"               case_config_legacy_leftovers_only_warn
 run_case "config: a malformed CRON_SCHEDULE exits 1"          case_config_bad_cron_schedule
 run_case "config: a normal '*/17 * * * *' is accepted"        case_config_normal_cron_schedule_is_accepted
 run_case "config: an @macro schedule is accepted"             case_config_cron_macro_is_accepted
@@ -787,6 +838,7 @@ run_case "help: shows the timezone actually applied"          case_help_shows_th
 run_case "help: shown for an unsupported option"              case_help_shown_for_an_unsupported_option
 run_case "help: not printed by a backup"                      case_help_not_printed_by_a_backup
 run_case "help: not printed by the healthcheck"               case_help_not_printed_by_the_healthcheck
+run_case "help: the menu explains the deprecation"            case_help_explains_the_deprecation
 
 printf -- '\n--- image ---\n'
 run_case "image: gsutil is absent"                            case_image_gsutil_absent
