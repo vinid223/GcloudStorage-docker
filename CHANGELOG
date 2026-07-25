@@ -33,6 +33,15 @@ Other changes
 - CLOUDSDK_* variables set on the container are carried over to the scheduled run, so CLI settings
   such as endpoint overrides or proxy configuration apply to backups too
 
+Usability
+
+- Every container now prints a settings menu at startup, before any validation, so
+  a container that refuses to start still shows what it accepts. It lists each
+  variable with its accepted values, its default and the value that container
+  actually resolved, plus the GCSOPTIONS values and the available commands. Also
+  available on demand (`docker run --rm <image> help`) and printed, with the
+  error, for an unsupported command. Scheduled backups do not repeat it
+
 Reliability
 
 - A failed sync is now both logged and reported: `run.sh backup` exits with the sync's own status, so

@@ -44,6 +44,23 @@ The remaining settings are optional and default to the previous behaviour:
   grows past this, so an hourly backup cannot fill the container's disk over months. Defaults to
   `10485760` (10 MB); set `0` to never trim.
 
+## The settings menu
+
+Every container prints a settings reference when it starts — before it validates
+anything, so a container that refuses to start still shows what it was looking
+for. It lists every variable, its accepted values and its default, plus the value
+that container actually resolved (`now:`), the `GCSOPTIONS` values, and the
+commands. It is the first thing in `docker logs`.
+
+To read it without starting anything:
+
+```
+docker run --rm vinid223/gcloud-storage-backup help
+```
+
+Scheduled backups do not repeat it, so it does not bury the transfer output in
+the log.
+
 ## Checking on it
 
 The container's stdout is the backup log, so `docker logs -f <container>` follows it live.

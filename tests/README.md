@@ -226,6 +226,12 @@ things that are awkward to provoke end to end:
   or dropped one fails the build rather than the next backup;
 - the lock being released when a run is **killed mid-sync**, and an empty lock
   file being taken over;
+- the **settings menu**: printed at startup on a good start and on every failing
+  one (missing configuration, legacy credentials, a malformed schedule), showing
+  the effective values including a timezone that fell back to UTC; available as
+  `help`/`--help`/`-h`; printed with the error for an unsupported command; and
+  *not* printed by a backup or by the healthcheck, whose output `docker inspect`
+  shows;
 - `LOG_MAX_BYTES=0` disabling trimming;
 - an explicit variable beating the env file, so
   `docker exec -e GCSOPTIONS=-n ... run.sh backup` works for a one-off dry run;
