@@ -9,40 +9,45 @@ gcloud-storage-docker is a Docker container which backs up one or more folders t
 
 > **Upgrading from 1.x?** Version 2.0 replaces gsutil with `gcloud storage` and no longer accepts
 > HMAC keys. `ACCESS_KEY`, `SECRET_KEY` and `BOTO_FILE` are gone; you now mount a service account
-> JSON key file instead. See [Migrating from 1.x](#migrating-from-1x).
+> JSON key file instead. See [Migrating from 1.x](#migrating-from-1x). The old configuration is
+> kept for reference under [Deprecated: 1.x configuration](#deprecated-1x-configuration).
+
+## Configuration (2.x)
 
 To tell gcloud-storage-docker what to back up, mount your desired volumes under the `/data` directory.
 
 gcloud-storage-docker is configured by setting the following environment variables during
 the launch of the container.
 
-- SERVICE_ACCOUNT_FILE - path to a mounted service account JSON key file, used to authenticate. Required.
-- GCSPATH - your GCS bucket and path (ex: gs://personal-backup-bucket/)
-- GCSOPTIONS - custom parameters to `gcloud storage rsync`. (ex: "-d" to have a exact copy of the local files (delete on the bucket files that don't exists anymore) )
-- PROJECT_ID - optional GCP project, if your bucket needs one to be set.
+### Required
 
-Files are by default backed up once every hour. You can customize this behavior
-using an environment variable which uses the standard CRON notation.
+| Variable | Description |
+| --- | --- |
+| `SERVICE_ACCOUNT_FILE` | Path, inside the container, to a mounted service account JSON key file. See [How to get your service account key file](#how-to-get-your-service-account-key-file). |
+| `GCSPATH` | Your GCS bucket and path (ex: `gs://personal-backup-bucket/`). |
 
-- `CRON_SCHEDULE` - set to `0 * * * *` by default, which means every hour.
+The container also needs the key file itself mounted (read-only is recommended), and at least one
+folder mounted under `/data`.
 
-The schedule is evaluated in the container timezone, which is UTC by default. Set `TZ` to a
-zoneinfo name to use your own timezone for both the schedule and the log timestamps.
+### Optional
 
-- `TZ` - set to `UTC` by default (ex: `America/Montreal`). An unknown name falls back to UTC
-  and logs a warning at startup.
+| Variable | Default | Description |
+| --- | --- | --- |
+| `GCSOPTIONS` | *(none)* | Extra parameters for `gcloud storage rsync` (ex: `-d` to make the bucket an exact copy of the local files, deleting objects that no longer exist locally). See [Backup options](#backup-options). |
+| `PROJECT_ID` | *(none)* | GCP project, if your bucket needs one to be set. |
+| `CRON_SCHEDULE` | `0 * * * *` | When to run the backup, in standard CRON notation (every hour by default). |
+| `TZ` | `UTC` | Zoneinfo name (ex: `America/Montreal`) used for both the schedule and the log timestamps. An unknown name falls back to UTC and logs a warning at startup. |
+| `RUN_ON_STARTUP` | `false` | Set to `true` to run one backup as soon as the container starts, instead of waiting up to a whole schedule interval to find out whether the configuration works. |
+| `LOG_MAX_BYTES` | `10485760` (10 MB) | The backup log (`/var/log/cron.log`) is trimmed to its most recent half once it grows past this, so an hourly backup cannot fill the container's disk over months. Set `0` to never trim. |
+| `CLOUDSDK_*` | *(none)* | Any Google Cloud CLI setting (endpoint overrides, proxy, ...) set on the container is carried over to the scheduled backups. |
 
-A schedule that is neither five fields nor an `@macro` (`@daily`, `@hourly`, ...) is rejected at
-startup rather than accepted and never fired.
+A `CRON_SCHEDULE` that is neither five fields nor an `@macro` (`@daily`, `@hourly`, ...) is rejected
+at startup rather than accepted and never fired.
 
-The remaining settings are optional and default to the previous behaviour:
+### Removed in 2.0
 
-- `RUN_ON_STARTUP` - set to `true` to run one backup as soon as the container starts, instead of
-  waiting up to a whole schedule interval to find out whether the configuration works. Off by
-  default.
-- `LOG_MAX_BYTES` - the backup log (`/var/log/cron.log`) is trimmed to its most recent half once it
-  grows past this, so an hourly backup cannot fill the container's disk over months. Defaults to
-  `10485760` (10 MB); set `0` to never trim.
+`ACCESS_KEY`, `SECRET_KEY` and `BOTO_FILE` are no longer supported. If any of them is still set, the
+container stops at startup with migration instructions. See [Migrating from 1.x](#migrating-from-1x).
 
 ## The settings menu
 
@@ -96,15 +101,15 @@ To backup the `Documents` and the `Photos` directories in your home folder, and
 running the backup at 03:00 every day, you could use something like this:
 
 ```
-docker run -d -v /home/user/Documents:/data/documents \ 
-              -v /home/user/Photos:/data/photos \ 
-              -v /path/to/service-account.json:/secrets/sa.json:ro \ 
-              -e "SERVICE_ACCOUNT_FILE=/secrets/sa.json" \ 
-              -e "GCSPATH=gs://yourgsbucket/" \ 
-              -e "GCSOPTIONS=-d" \ 
-              -e "CRON_SCHEDULE=0 3 * * *" \ 
-              -e "TZ=America/Montreal" \ 
-              vinid223/gcloud-storage-docker 
+docker run -d -v /home/user/Documents:/data/documents \
+              -v /home/user/Photos:/data/photos \
+              -v /path/to/service-account.json:/secrets/sa.json:ro \
+              -e "SERVICE_ACCOUNT_FILE=/secrets/sa.json" \
+              -e "GCSPATH=gs://yourgsbucket/" \
+              -e "GCSOPTIONS=-d" \
+              -e "CRON_SCHEDULE=0 3 * * *" \
+              -e "TZ=America/Montreal" \
+              vinid223/gcloud-storage-backup
 ```
 
 ## How to get your service account key file
@@ -195,7 +200,75 @@ If any of the removed variables are still set, the container stops at startup wi
 instructions rather than running a backup that cannot authenticate.
 
 Staying on 1.x is also an option: `vinid223/gcloud-storage-backup:V1.3` keeps working with HMAC keys,
-and gsutil itself keeps working until Google removes it in March 2027.
+and gsutil itself keeps working until Google removes it in March 2027. Pin that tag explicitly:
+`latest` now points at 2.x.
+
+## Deprecated: 1.x configuration
+
+> **Deprecated.** This section only applies to `vinid223/gcloud-storage-backup:V1.3` and earlier,
+> which back up with gsutil. It is no longer maintained and stops working when Google removes gsutil
+> from the Google Cloud CLI after March 2027. A 2.x container given these variables refuses to
+> start. Use it only until you have [migrated](#migrating-from-1x).
+
+1.x was configured with these environment variables:
+
+- `ACCESS_KEY` - your GCP HMAC access key for a service account. The string should not contain the
+  character `|`.
+- `SECRET_KEY` - your GCP HMAC secret key for a service account. The string should not contain the
+  character `|`.
+- `BOTO_FILE` - path to a mounted boto configuration file containing the access key, the secret key
+  and your own settings. When set, `ACCESS_KEY` and `SECRET_KEY` are ignored.
+- `GCSPATH`, `GCSOPTIONS` (passed to `gsutil -m rsync -r`) and `CRON_SCHEDULE`, as in 2.x.
+
+To get the HMAC keys:
+
+1. Go to the GCS Settings page, on the
+   [Interoperability tab](https://console.cloud.google.com/storage/settings;tab=interoperability).
+2. Under `Service account HMAC`, click on a service account if one exists or create a new one by
+   clicking on `CREATE A KEY FOR ANOTHER SERVICE ACCOUNT`.
+3. Click on `CREATE A KEY` to get the Access Key and Secret Key.
+
+Example invocation with keys in environment variables:
+
+```
+docker run -d -v /home/user/Documents:/data/documents \
+              -v /home/user/Photos:/data/photos \
+              -e "ACCESS_KEY=YOURACCESSKEY" \
+              -e "SECRET_KEY=YOURSECRETKEY" \
+              -e "GCSPATH=gs://yourgsbucket/" \
+              -e "GCSOPTIONS=-d" \
+              -e "CRON_SCHEDULE=0 3 * * *" \
+              vinid223/gcloud-storage-backup:V1.3
+```
+
+Or with a boto file, mounted into the container and pointed at by `BOTO_FILE`:
+
+```
+[Credentials]
+gs_access_key_id=YOURACCESSKEY
+gs_secret_access_key=YOURSECRETKEY
+
+[Boto]
+
+[GoogleCompute]
+
+[GSUtil]
+content_language = en
+default_api_version = 2
+
+[OAuth2]
+```
+
+```
+docker run -d -v /home/user/Documents:/data/documents \
+              -v /home/user/Photos:/data/photos \
+              -v /path/to/local/boto/file:/tmp/boto.tmp \
+              -e "BOTO_FILE=/tmp/boto.tmp" \
+              -e "GCSPATH=gs://yourgsbucket/" \
+              -e "GCSOPTIONS=-d" \
+              -e "CRON_SCHEDULE=0 3 * * *" \
+              vinid223/gcloud-storage-backup:V1.3
+```
 
 ## Development
 
@@ -207,6 +280,11 @@ docker build -t gcloud-storage-backup .
 end-to-end one that runs real transfers against a local Google Cloud Storage stand-in. See
 [`tests/README.md`](tests/README.md). CI runs the fast one on every push, plus `shellcheck` and
 `hadolint`; the end-to-end suite is meant to be run locally before a release.
+
+## AI disclaimer
+
+AI tools are used to help maintain this project, including writing code, tests and documentation.
+Every change is reviewed by the maintainer before it is committed and released.
 
 ## Inspiration
 https://github.com/joch/docker-s3backup
