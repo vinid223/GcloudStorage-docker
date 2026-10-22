@@ -79,7 +79,8 @@ containers:
 * `$TEST_WORK_DIR/buckets` -> `/data` in fake-gcs-server, one subdirectory per
   bucket (`buckets/testbucket` is `gs://testbucket`), used as the seed;
 * `$TEST_WORK_DIR/secrets` -> `/secrets` in the backup container, holding the
-  generated fake key files.
+  generated fake key as `sa.json`. The key validation cases mount
+  `secrets-empty`, `secrets-misnamed` or `secrets-notakey` over it instead.
 
 All images are pinned to `linux/amd64` so behaviour is identical on an arm64
 host.
@@ -127,11 +128,11 @@ exercise the real credential path - see below.
 
 | Case | Asserts |
 | --- | --- |
-| missing `SERVICE_ACCOUNT_FILE` exits 1 | exit 1 and `SERVICE_ACCOUNT_FILE must be set ...` |
-| key file path not found exits 1 | exit 1 and `... not found. Mount the service account key file ...` |
-| file is not a service account key exits 1 | a valid JSON file without the key fields is rejected: exit 1 and `... is not a service account JSON key file ...` |
+| no key in `/secrets` exits 1 | an empty directory mounted at `/secrets`: exit 1 and `Service account key not found at /secrets/sa.json ...` |
+| key not named `sa.json` exits 1 | a directory holding the key as `key.json`: exit 1 and the same `... not found ...` message |
+| file is not a service account key exits 1 | a valid JSON `sa.json` without the key fields is rejected: exit 1 and `... is not a service account JSON key file ...` |
 | missing `GCSPATH` exits non-zero | non-zero exit and `GCSPATH required` |
-| `ACCESS_KEY` without key file exits 1 | exit 1, the 2.0 migration instructions, including the `SERVICE_ACCOUNT_FILE=/path/to/key.json` line |
+| `ACCESS_KEY` without key file exits 1 | exit 1, the 2.0 migration instructions, including the `-v /path/on/host/secrets:/secrets:ro` line |
 | `ACCESS_KEY` with key file warns and starts | the `WARNING: ACCESS_KEY, SECRET_KEY and BOTO_FILE are ignored` line, and the container stays up with the scheduler running |
 | `CRON_SCHEDULE` field count is validated | `CRON_SCHEDULE='0 *'` exits 1 reporting `Got 2 field(s)` - the number of fields, not the number of files a `*` would expand to |
 | `CRON_SCHEDULE` @macro is accepted | `@daily` passes validation and lands in the crontab as `@daily sh /opt/run.sh backup` |
@@ -169,7 +170,7 @@ resulting bucket contents (via `gcloud storage ls`) and on `/var/log/cron.log`.
 | healthcheck reports a good backup | `run.sh healthcheck` exits 0 with `no backup has completed yet` before the first run, and 0 with `last backup succeeded` after one |
 | healthcheck reports a failed backup | after a failing backup, `run.sh healthcheck` exits 1 with `last backup FAILED with exit status 1` |
 | crontab holds schedule and command | the crontab line is exactly `<schedule> sh /opt/run.sh backup` |
-| env file carries the settings | `/tmp/gcsbackup.env` holds `GCSPATH`, `GCSOPTIONS`, `TZ`, `SERVICE_ACCOUNT_FILE`, `PROJECT_ID` and every `CLOUDSDK_*` variable (the endpoint override, `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`, `CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_PYTHON`, `CLOUDSDK_CONFIG`), because crond hands its jobs a minimal environment |
+| env file carries the settings | `/tmp/gcsbackup.env` holds `GCSPATH`, `GCSOPTIONS`, `TZ`, `PROJECT_ID` and every `CLOUDSDK_*` variable (the endpoint override, `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE`, `CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_PYTHON`, `CLOUDSDK_CONFIG`), because crond hands its jobs a minimal environment |
 | hand-run `run.sh backup` works | the documented `docker exec <container> sh /opt/run.sh backup` exits 0 and really uploads |
 | backup works in crond's environment | the same hand-run, but with the container's own variables stripped (`env -i` with just `HOME`, `SHELL`, `PATH`, `USER`, `LOGNAME`) - what crond actually gives the job. It has to rebuild everything from the env file: same command line, no `Unknown timezone`, exit 0, data uploaded. This is the scheduled path without the wait |
 | `RUN_ON_STARTUP` backs up immediately | with `RUN_ON_STARTUP=true`, setup logs `Initial backup finished with exit status 0` and the data is in the bucket before the first scheduled run |

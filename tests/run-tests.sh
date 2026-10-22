@@ -41,6 +41,10 @@ export TEST_WORK_DIR
 DATA_DIR="$TEST_WORK_DIR/data"
 BUCKETS_DIR="$TEST_WORK_DIR/buckets"
 SECRETS_DIR="$TEST_WORK_DIR/secrets"
+# Alternatives mounted over /secrets by the key validation cases.
+SECRETS_EMPTY_DIR="$TEST_WORK_DIR/secrets-empty"
+SECRETS_MISNAMED_DIR="$TEST_WORK_DIR/secrets-misnamed"
+SECRETS_NOTAKEY_DIR="$TEST_WORK_DIR/secrets-notakey"
 
 # The object names produced by backing up tests/fixtures/data as-is.
 FIXTURE_OBJECTS="hello.txt logs/app.log notes/deep/nested.txt notes/readme.md skipme/ignored.txt"
@@ -108,8 +112,10 @@ generate_fake_key() {
   "token_uri": "https://oauth2.googleapis.com/token"
 }
 EOF
-    # Valid JSON, but not a service account key: used by the validation cases.
-    printf '{"foo": "bar"}\n' > "$SECRETS_DIR/notakey.json"
+    # The validation cases mount these over /secrets instead: no key at all, the
+    # real key under another name, and valid JSON that is not a key.
+    cp "$SECRETS_DIR/sa.json" "$SECRETS_MISNAMED_DIR/key.json"
+    printf '{"foo": "bar"}\n' > "$SECRETS_NOTAKEY_DIR/sa.json"
 }
 
 setup_stack() {
@@ -121,7 +127,8 @@ setup_stack() {
     dc down --remove-orphans >/dev/null 2>&1
 
     rm -rf "$TEST_WORK_DIR"
-    mkdir -p "$DATA_DIR" "$BUCKETS_DIR/testbucket" "$SECRETS_DIR"
+    mkdir -p "$DATA_DIR" "$BUCKETS_DIR/testbucket" "$SECRETS_DIR" \
+        "$SECRETS_EMPTY_DIR" "$SECRETS_MISNAMED_DIR" "$SECRETS_NOTAKEY_DIR"
     generate_fake_key
     reset_data
 
@@ -331,20 +338,20 @@ case_image_declares_healthcheck() {
 # Cases: configuration validation
 # ---------------------------------------------------------------------------
 
-case_config_missing_service_account_file() {
-    setup_once -e SERVICE_ACCOUNT_FILE=
+case_config_missing_key_file() {
+    setup_once -v "$SECRETS_EMPTY_DIR:/secrets:ro"
     expect_status "$SETUP_STATUS" 1 || { note "$SETUP_OUT"; return 1; }
-    expect_contains "$SETUP_OUT" "SERVICE_ACCOUNT_FILE must be set" "setup output" || return 1
+    expect_contains "$SETUP_OUT" "Service account key not found at /secrets/sa.json" "setup output" || return 1
 }
 
 case_config_key_file_not_found() {
-    setup_once -e SERVICE_ACCOUNT_FILE=/secrets/does-not-exist.json
+    setup_once -v "$SECRETS_MISNAMED_DIR:/secrets:ro"
     expect_status "$SETUP_STATUS" 1 || { note "$SETUP_OUT"; return 1; }
-    expect_contains "$SETUP_OUT" "not found. Mount the service account key file" "setup output" || return 1
+    expect_contains "$SETUP_OUT" "Service account key not found at /secrets/sa.json" "setup output" || return 1
 }
 
 case_config_key_file_not_a_key() {
-    setup_once -e SERVICE_ACCOUNT_FILE=/secrets/notakey.json
+    setup_once -v "$SECRETS_NOTAKEY_DIR:/secrets:ro"
     expect_status "$SETUP_STATUS" 1 || { note "$SETUP_OUT"; return 1; }
     expect_contains "$SETUP_OUT" "is not a service account JSON key file" "setup output" || return 1
 }
@@ -360,10 +367,10 @@ case_config_missing_gcspath() {
 }
 
 case_config_legacy_keys_without_service_account() {
-    setup_once -e SERVICE_ACCOUNT_FILE= -e ACCESS_KEY=legacy-access -e SECRET_KEY=legacy-secret
+    setup_once -v "$SECRETS_EMPTY_DIR:/secrets:ro" -e ACCESS_KEY=legacy-access -e SECRET_KEY=legacy-secret
     expect_status "$SETUP_STATUS" 1 || { note "$SETUP_OUT"; return 1; }
     expect_contains "$SETUP_OUT" "no longer supported as of version 2.0" "setup output" || return 1
-    expect_contains "$SETUP_OUT" "SERVICE_ACCOUNT_FILE=/path/to/key.json" "setup output" || return 1
+    expect_contains "$SETUP_OUT" "-v /path/on/host/secrets:/secrets:ro" "setup output" || return 1
 }
 
 case_config_legacy_keys_with_service_account_warns() {
@@ -682,7 +689,6 @@ case_setup_env_file_carries_settings() {
     expect_contains "$envfile" "GCSOPTIONS" "env file" || return 1
     expect_contains "$envfile" "TZ" "env file" || return 1
     expect_contains "$envfile" "America/Montreal" "env file" || return 1
-    expect_contains "$envfile" "SERVICE_ACCOUNT_FILE" "env file" || return 1
     expect_contains "$envfile" "/secrets/sa.json" "env file" || return 1
     expect_contains "$envfile" "PROJECT_ID" "env file" || return 1
     expect_contains "$envfile" "my-project" "env file" || return 1
@@ -857,8 +863,8 @@ run_case "image: python3 present, bundled one dropped"        case_image_python3
 run_case "image: declares a HEALTHCHECK"                      case_image_declares_healthcheck
 
 printf -- '\n--- configuration validation ---\n'
-run_case "config: missing SERVICE_ACCOUNT_FILE exits 1"       case_config_missing_service_account_file
-run_case "config: key file path not found exits 1"            case_config_key_file_not_found
+run_case "config: no key in /secrets exits 1"                 case_config_missing_key_file
+run_case "config: key not named sa.json exits 1"              case_config_key_file_not_found
 run_case "config: file is not a service account key exits 1"  case_config_key_file_not_a_key
 run_case "config: missing GCSPATH exits non-zero"             case_config_missing_gcspath
 run_case "config: ACCESS_KEY without key file exits 1"        case_config_legacy_keys_without_service_account

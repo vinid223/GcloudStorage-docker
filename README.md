@@ -8,26 +8,28 @@ Docker Hub : https://hub.docker.com/r/vinid223/gcloud-storage-backup
 gcloud-storage-docker is a Docker container which backs up one or more folders to Google Cloud Storage using the `gcloud storage` tool.
 
 > **Upgrading from 1.x?** Version 2.0 replaces gsutil with `gcloud storage` and no longer accepts
-> HMAC keys. `ACCESS_KEY`, `SECRET_KEY` and `BOTO_FILE` are gone; you now mount a service account
-> JSON key file instead. See [Migrating from 1.x](#migrating-from-1x). The old configuration is
-> kept for reference under [Deprecated: 1.x configuration](#deprecated-1x-configuration).
+> HMAC keys. `ACCESS_KEY`, `SECRET_KEY` and `BOTO_FILE` are gone; you now mount a directory holding
+> a service account JSON key at `/secrets` instead. See [Migrating from 1.x](#migrating-from-1x).
+> The old configuration is kept for reference under
+> [Deprecated: 1.x configuration](#deprecated-1x-configuration).
 
 ## Configuration (2.x)
 
-To tell gcloud-storage-docker what to back up, mount your desired volumes under the `/data` directory.
+### Mounts
+
+| Container path | Description |
+| --- | --- |
+| `/data` | The folders to back up, each mounted under it (ex: `-v /home/user/Documents:/data/documents`). |
+| `/secrets` | A host directory containing your service account JSON key, named `sa.json` (ex: `-v /path/on/host/secrets:/secrets:ro`). The key is always read from `/secrets/sa.json`; read-only is recommended. See [How to get your service account key file](#how-to-get-your-service-account-key-file). |
+
+### Required
 
 gcloud-storage-docker is configured by setting the following environment variables during
 the launch of the container.
 
-### Required
-
 | Variable | Description |
 | --- | --- |
-| `SERVICE_ACCOUNT_FILE` | Path, inside the container, to a mounted service account JSON key file. See [How to get your service account key file](#how-to-get-your-service-account-key-file). |
 | `GCSPATH` | Your GCS bucket and path (ex: `gs://personal-backup-bucket/`). |
-
-The container also needs the key file itself mounted (read-only is recommended), and at least one
-folder mounted under `/data`.
 
 ### Optional
 
@@ -103,8 +105,7 @@ running the backup at 03:00 every day, you could use something like this:
 ```
 docker run -d -v /home/user/Documents:/data/documents \
               -v /home/user/Photos:/data/photos \
-              -v /path/to/service-account.json:/secrets/sa.json:ro \
-              -e "SERVICE_ACCOUNT_FILE=/secrets/sa.json" \
+              -v /path/on/host/secrets:/secrets:ro \
               -e "GCSPATH=gs://yourgsbucket/" \
               -e "GCSOPTIONS=-d" \
               -e "CRON_SCHEDULE=0 3 * * *" \
@@ -120,8 +121,8 @@ docker run -d -v /home/user/Documents:/data/documents \
    needs, including the deletions `-d` performs. Without `-d`, `Storage Object User` is enough.
 3. Open the service account, go to the `Keys` tab, then `ADD KEY` -> `Create new key` -> `JSON`,
    and download the file.
-4. Mount that file into the container and point `SERVICE_ACCOUNT_FILE` at the path inside the
-   container, as in the example above. Mounting it read-only (`:ro`) is recommended.
+4. Save it as `sa.json` in a directory of its own on the host, and mount that directory at
+   `/secrets`, as in the example above. Mounting it read-only (`:ro`) is recommended.
 
 The key file is read at backup time to mint an access token; nothing is written to the container.
 The startup log prints which service account is in use so you can confirm the identity.
@@ -176,8 +177,8 @@ it, so the credentials have to change.
 
 | 1.x | 2.0 |
 | --- | --- |
-| `ACCESS_KEY` + `SECRET_KEY` (HMAC) | `SERVICE_ACCOUNT_FILE` pointing at a mounted JSON key |
-| `BOTO_FILE` (HMAC in a boto file) | `SERVICE_ACCOUNT_FILE` pointing at a mounted JSON key |
+| `ACCESS_KEY` + `SECRET_KEY` (HMAC) | A JSON key at `sa.json` in a directory mounted at `/secrets` |
+| `BOTO_FILE` (HMAC in a boto file) | A JSON key at `sa.json` in a directory mounted at `/secrets` |
 | `gsutil -m rsync -r` | `gcloud storage rsync --recursive` |
 
 Everything else is unchanged: `/data`, `GCSPATH`, `GCSOPTIONS`, `CRON_SCHEDULE`, `TZ` and the
@@ -189,8 +190,8 @@ Steps:
    today already belong to a service account, which you can reuse - the console shows which one
    under `Service account HMAC` in the
    [interoperability settings](https://console.cloud.google.com/storage/settings;tab=interoperability).
-2. Mount the key file and replace `ACCESS_KEY` / `SECRET_KEY` (or `BOTO_FILE`) with
-   `SERVICE_ACCOUNT_FILE`.
+2. Replace `ACCESS_KEY` / `SECRET_KEY` (or `BOTO_FILE`) with a mount of the directory holding
+   `sa.json` at `/secrets`: `-v /path/on/host/secrets:/secrets:ro`.
 3. Check the result before the first scheduled run, either with
    `RUN_ON_STARTUP=true` on the container, or with
    `docker exec <container> sh /opt/run.sh backup` followed by `docker logs <container>`.

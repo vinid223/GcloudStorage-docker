@@ -19,7 +19,6 @@ name: gcsbackup-tests
 x-work-dir: &work-dir ${TEST_WORK_DIR:?TEST_WORK_DIR must point at the test work directory - use tests/run-tests.sh}
 
 x-gcloud-env: &gcloud-env
-  SERVICE_ACCOUNT_FILE: /secrets/sa.json
   GCSPATH: gs://testbucket/
   # Send every storage API call to the fake server instead of googleapis.com.
   CLOUDSDK_API_ENDPOINT_OVERRIDES_STORAGE: http://fakegcs:4443/storage/v1/

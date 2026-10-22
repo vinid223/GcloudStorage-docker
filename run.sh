@@ -23,6 +23,7 @@ STATUSFILE="/tmp/gcsbackup.status"
 ENVFILE="/tmp/gcsbackup.env"
 CRONFILE="/etc/crontabs/root"
 GCLOUD="/google-cloud-sdk/bin/gcloud"
+KEY_FILE="/secrets/sa.json"
 
 # crond hands the jobs it spawns a minimal environment, so setup writes every
 # setting it resolved to $ENVFILE and the scheduled run reads it back. That keeps
@@ -38,7 +39,6 @@ if [ "$OPTION" != "setup" ] && [ -f "$ENVFILE" ]; then
     . "$ENVFILE"
 fi
 
-SERVICE_ACCOUNT_FILE=${SERVICE_ACCOUNT_FILE:-}
 PROJECT_ID=${PROJECT_ID:-}
 GCSPATH=${GCSPATH:-}
 GCSOPTIONS=${GCSOPTIONS:-}
@@ -75,6 +75,16 @@ shquote()
     printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
+# For the help menu: whether the key file is mounted where it is expected.
+key_file_state()
+{
+    if [ -f "$KEY_FILE" ]; then
+      printf 'found'
+    else
+      printf 'NOT FOUND'
+    fi
+}
+
 # For the help menu: show a value, or say so when there is none.
 or_unset()
 {
@@ -95,15 +105,22 @@ print_help()
 ======================================================================
  gcloud-storage-docker - backs up /data to Google Cloud Storage
 ======================================================================
- Mount the directories to back up under /data. Authentication is a
- service account JSON key file, mounted anywhere and pointed at by
- SERVICE_ACCOUNT_FILE.
+ Mount the directories to back up under /data, and a host directory
+ holding the service account JSON key, named sa.json, at /secrets.
+
+ MOUNTS
+
+ /data                 REQUIRED
+   One or more directories to back up, mounted under it.
+   ex: -v /home/user/Documents:/data/documents
+
+ /secrets              REQUIRED
+   A directory containing sa.json, a service account JSON key. The
+   key is always read from $KEY_FILE. Read-only is recommended.
+   ex: -v /path/on/host/secrets:/secrets:ro
+   now: $KEY_FILE $(key_file_state)
 
  SETTINGS                            "now:" is the value in use here
-
- SERVICE_ACCOUNT_FILE  REQUIRED
-   Path inside the container to a mounted service account JSON key.
-   now: $(or_unset "$SERVICE_ACCOUNT_FILE")
 
  GCSPATH               REQUIRED
    Destination bucket, with an optional path inside it.
@@ -179,9 +196,9 @@ print_help()
    the tool 1.x transferred files with, and removes it from the Cloud
    CLI after March 2027; backups now use its replacement, 'gcloud
    storage'. That tool talks to the JSON API, which HMAC keys cannot
-   sign, so authentication moved to SERVICE_ACCOUNT_FILE. Setting any
-   of the three prints full migration instructions. See "Migrating
-   from 1.x" in the README.
+   sign, so authentication moved to a service account key mounted at
+   /secrets. Setting any of the three prints full migration
+   instructions. See "Migrating from 1.x" in the README.
 ======================================================================
 HELP
 }
@@ -244,12 +261,13 @@ check_removed_credentials()
     fi
 
     # Leftovers in an otherwise migrated configuration: harmless, just noise.
-    if [ -n "$SERVICE_ACCOUNT_FILE" ]; then
+    if [ -f "$KEY_FILE" ]; then
       echo ""
       echo "WARNING: ACCESS_KEY, SECRET_KEY and BOTO_FILE are ignored as of version 2.0."
       echo "They configured gsutil, which Google is retiring - see below - so backups now"
-      echo "run 'gcloud storage' and authenticate with SERVICE_ACCOUNT_FILE instead, which"
-      echo "is already set. You can remove the three old variables from your configuration."
+      echo "run 'gcloud storage' and authenticate with the service account key mounted at"
+      echo "$KEY_FILE instead, which is already there. You can remove the three old"
+      echo "variables from your configuration."
       echo ""
       return
     fi
@@ -286,10 +304,11 @@ check_removed_credentials()
     everything, including the deletions GCSOPTIONS=-d performs;
     without -d, "Storage Object User" is enough.
  3. Create a JSON key for it (service account -> Keys -> Add key ->
-    Create new key -> JSON) and mount the downloaded file into this
-    container, read-only.
- 4. Replace ACCESS_KEY and SECRET_KEY (or BOTO_FILE) with:
-      SERVICE_ACCOUNT_FILE=/path/to/key.json
+    Create new key -> JSON), and save the downloaded file as sa.json
+    in a directory of its own on the host.
+ 4. Replace ACCESS_KEY and SECRET_KEY (or BOTO_FILE) with a read-only
+    mount of that directory at /secrets:
+      -v /path/on/host/secrets:/secrets:ro
 
  Nothing else changes: /data, GCSPATH, GCSOPTIONS, CRON_SCHEDULE and
  TZ all keep working exactly as they did. Full instructions are under
@@ -305,8 +324,8 @@ check_removed_credentials()
 MIGRATE
 
     # Terminal on purpose: there is no configuration in which these variables
-    # work. Exiting here also keeps the generic "SERVICE_ACCOUNT_FILE must be
-    # set" message from trailing the explanation that just answered it.
+    # work. Exiting here also keeps the generic "key file not found" message
+    # from trailing the explanation that just answered it.
     echo "Exiting"
     exit 1
 }
@@ -316,9 +335,7 @@ MIGRATE
 # round-trip to Google and no credential state to keep in the container.
 configure_gcloud_env()
 {
-    if [ -n "$SERVICE_ACCOUNT_FILE" ]; then
-      export CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$SERVICE_ACCOUNT_FILE"
-    fi
+    export CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$KEY_FILE"
 
     if [ -n "$PROJECT_ID" ]; then
       export CLOUDSDK_CORE_PROJECT="$PROJECT_ID"
@@ -364,7 +381,7 @@ validate_cron_schedule()
 # and patterns containing spaces or quotes survive the round trip.
 write_env_file()
 {
-    CARRIED="GCSPATH GCSOPTIONS TZ SERVICE_ACCOUNT_FILE PROJECT_ID LOG_MAX_BYTES"
+    CARRIED="GCSPATH GCSOPTIONS TZ PROJECT_ID LOG_MAX_BYTES"
     # Any CLI setting passed to the container (endpoint overrides, proxy
     # settings, verbosity) is carried over too, so a scheduled run behaves like a
     # hand-run one. Only names are read from env, so multi-line values are safe.
@@ -475,14 +492,9 @@ if [ "$OPTION" = "setup" ]; then
   require_gcspath
   validate_cron_schedule
 
-  if [ -z "$SERVICE_ACCOUNT_FILE" ]; then
-    echo "SERVICE_ACCOUNT_FILE must be set to the path of a mounted service account JSON key file."
-    echo "Exiting"
-    exit 1
-  fi
-
-  if [ ! -f "$SERVICE_ACCOUNT_FILE" ]; then
-    echo "SERVICE_ACCOUNT_FILE '$SERVICE_ACCOUNT_FILE' not found. Mount the service account key file in the container."
+  if [ ! -f "$KEY_FILE" ]; then
+    echo "Service account key not found at $KEY_FILE. Save the key as sa.json in a directory on"
+    echo "the host and mount that directory at /secrets:  -v /path/on/host/secrets:/secrets:ro"
     echo "Exiting"
     exit 1
   fi
@@ -490,10 +502,10 @@ if [ "$OPTION" = "setup" ]; then
   # Checked locally on purpose: nothing here contacts Google, so a restart
   # during a network outage still brings the container up and the next
   # scheduled run retries. Tokens are minted at sync time instead.
-  SERVICE_ACCOUNT_EMAIL=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['client_email'] if d.get('type') == 'service_account' and d.get('private_key') else '')" "$SERVICE_ACCOUNT_FILE" 2>/dev/null)
+  SERVICE_ACCOUNT_EMAIL=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['client_email'] if d.get('type') == 'service_account' and d.get('private_key') else '')" "$KEY_FILE" 2>/dev/null)
 
   if [ -z "$SERVICE_ACCOUNT_EMAIL" ]; then
-    echo "SERVICE_ACCOUNT_FILE '$SERVICE_ACCOUNT_FILE' is not a service account JSON key file (expected type, private_key and client_email fields)."
+    echo "$KEY_FILE is not a service account JSON key file (expected type, private_key and client_email fields)."
     echo "Exiting"
     exit 1
   fi

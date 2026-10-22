@@ -296,21 +296,24 @@ case_config_missing_gcspath() {
 
 case_config_missing_key_file() {
     out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' -e GCSPATH=gs://bucket/)
-    expect_contains "$out" "SERVICE_ACCOUNT_FILE must be set" "setup output" || return 1
+    expect_contains "$out" "Service account key not found at /secrets/sa.json" "setup output" || return 1
+    expect_contains "$out" "-v /path/on/host/secrets:/secrets:ro" "setup output" || return 1
     expect_contains "$out" "__STATUS__:1" "setup output" || return 1
 }
 
+# /secrets is mounted, but the key in it is not named sa.json.
 case_config_key_file_not_found() {
-    out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' \
-        -e GCSPATH=gs://bucket/ -e SERVICE_ACCOUNT_FILE=/nope.json)
-    expect_contains "$out" "not found. Mount the service account key file" "setup output" || return 1
+    out=$(in_image 'mkdir -p /secrets; echo "{}" > /secrets/key.json
+        sh /opt/run.sh setup; echo "__STATUS__:$?"' \
+        -e GCSPATH=gs://bucket/)
+    expect_contains "$out" "Service account key not found at /secrets/sa.json" "setup output" || return 1
     expect_contains "$out" "__STATUS__:1" "setup output" || return 1
 }
 
 case_config_key_file_not_a_key() {
-    out=$(in_image 'echo "{\"foo\":\"bar\"}" > /tmp/k.json
+    out=$(in_image 'mkdir -p /secrets; echo "{\"foo\":\"bar\"}" > /secrets/sa.json
         sh /opt/run.sh setup; echo "__STATUS__:$?"' \
-        -e GCSPATH=gs://bucket/ -e SERVICE_ACCOUNT_FILE=/tmp/k.json)
+        -e GCSPATH=gs://bucket/)
     expect_contains "$out" "is not a service account JSON key file" "setup output" || return 1
     expect_contains "$out" "__STATUS__:1" "setup output" || return 1
 }
@@ -322,7 +325,7 @@ case_config_legacy_keys_are_rejected() {
     expect_contains "$out" "__STATUS__:1" "setup output" || return 1
     # The explanation answers the generic complaint, so it must not be followed
     # by it as well.
-    expect_not_contains "$out" "SERVICE_ACCOUNT_FILE must be set" "setup output" || return 1
+    expect_not_contains "$out" "Service account key not found" "setup output" || return 1
 }
 
 # Someone upgrading needs to know the switch was forced by Google retiring
@@ -336,7 +339,7 @@ case_config_legacy_keys_explain_the_deprecation() {
     expect_contains "$out" "gcloud storage" "setup output" || return 1
     # And what to actually do about it.
     expect_contains "$out" "HOW TO MIGRATE" "setup output" || return 1
-    expect_contains "$out" "SERVICE_ACCOUNT_FILE=/path/to/key.json" "setup output" || return 1
+    expect_contains "$out" "-v /path/on/host/secrets:/secrets:ro" "setup output" || return 1
     expect_contains "$out" "Storage Object Admin" "setup output" || return 1
 }
 
@@ -352,12 +355,11 @@ case_config_boto_file_explains_the_deprecation() {
 # Already migrated, but the old variables are still lying around: that is a
 # warning, not a failure, and it should still say why they stopped mattering.
 case_config_legacy_leftovers_only_warn() {
-    out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' \
-        -e GCSPATH=gs://bucket/ -e SERVICE_ACCOUNT_FILE=/nope.json -e ACCESS_KEY=k)
+    out=$(setup_dry 'true' -e ACCESS_KEY=k)
     expect_contains "$out" "WARNING: ACCESS_KEY, SECRET_KEY and BOTO_FILE are ignored" "setup output" || return 1
     expect_contains "$out" "retiring" "setup output" || return 1
-    # It got past the credentials check and failed on the key file instead.
-    expect_contains "$out" "not found. Mount the service account key file" "setup output" || return 1
+    # It got past the credentials check and finished setup.
+    expect_contains "$out" "SETUP_DONE" "setup output" || return 1
     expect_not_contains "$out" "WHY THIS CHANGED" "setup output" || return 1
 }
 
@@ -385,7 +387,7 @@ case_config_normal_cron_schedule_is_accepted() {
     out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' \
         -e GCSPATH=gs://bucket/ -e CRON_SCHEDULE="*/17 * * * *")
     expect_not_contains "$out" "CRON_SCHEDULE must have 5 fields" "setup output" || return 1
-    expect_contains "$out" "SERVICE_ACCOUNT_FILE must be set" "setup output" || return 1
+    expect_contains "$out" "Service account key not found at /secrets/sa.json" "setup output" || return 1
 }
 
 case_config_cron_macro_is_accepted() {
@@ -394,7 +396,7 @@ case_config_cron_macro_is_accepted() {
     out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' \
         -e GCSPATH=gs://bucket/ -e CRON_SCHEDULE="@daily")
     expect_not_contains "$out" "CRON_SCHEDULE must have 5 fields" "setup output" || return 1
-    expect_contains "$out" "SERVICE_ACCOUNT_FILE must be set" "setup output" || return 1
+    expect_contains "$out" "Service account key not found at /secrets/sa.json" "setup output" || return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -491,7 +493,7 @@ PY
         sed "s|^  crond -L .*|  echo CROND_WOULD_START|; s|^  exec tail.*|  echo SETUP_DONE|" /opt/run.sh > /tmp/setup.sh
         '"$_extra"'
         sh /tmp/setup.sh setup' \
-        -e GCSPATH=gs://bucket/ -e SERVICE_ACCOUNT_FILE=/secrets/sa.json "$@"
+        -e GCSPATH=gs://bucket/ "$@"
 }
 
 case_setup_crontab_is_a_bare_job_line() {
@@ -521,7 +523,7 @@ PY
         env -i sh /opt/run.sh backup >/dev/null 2>&1
         echo "__STATUS__:$?"
         cat /var/log/cron.log' \
-        -e GCSPATH=gs://bucket/ -e SERVICE_ACCOUNT_FILE=/secrets/sa.json \
+        -e GCSPATH=gs://bucket/ \
         -e "GCSOPTIONS=-x 'my notes'" -e PROJECT_ID=my-project \
         -e CLOUDSDK_API_ENDPOINT_OVERRIDES_STORAGE=http://example/storage/v1/)
     expect_contains "$out" "GCSPATH='gs://bucket/'" "env file" || return 1
@@ -558,7 +560,7 @@ PY
         sh /tmp/setup.sh setup
         echo "--- log ---"
         cat /var/log/cron.log' \
-        -e GCSPATH=gs://bucket/ -e SERVICE_ACCOUNT_FILE=/secrets/sa.json -e RUN_ON_STARTUP=true)
+        -e GCSPATH=gs://bucket/ -e RUN_ON_STARTUP=true)
     expect_contains "$out" "RUN_ON_STARTUP is set" "setup output" || return 1
     expect_contains "$out" "Initial backup finished with exit status 0" "setup output" || return 1
     expect_contains "$out" "ARGV: storage rsync" "log" || return 1
@@ -588,7 +590,7 @@ case_help_command_prints_the_menu() {
     expect_contains "$out" "GCSOPTIONS VALUES" "help output" || return 1
     expect_contains "$out" "COMMANDS" "help output" || return 1
     # Every setting has to be listed.
-    for v in SERVICE_ACCOUNT_FILE GCSPATH CRON_SCHEDULE TZ GCSOPTIONS \
+    for v in /secrets/sa.json /data GCSPATH CRON_SCHEDULE TZ GCSOPTIONS \
              PROJECT_ID RUN_ON_STARTUP LOG_MAX_BYTES; do
         expect_contains "$out" "$v" "help output" || return 1
     done
@@ -797,8 +799,8 @@ run_case "lock: released when the run is interrupted"         case_lock_is_relea
 
 printf -- '\n--- configuration validation ---\n'
 run_case "config: missing GCSPATH exits 1"                    case_config_missing_gcspath
-run_case "config: missing SERVICE_ACCOUNT_FILE exits 1"       case_config_missing_key_file
-run_case "config: key file path not found exits 1"            case_config_key_file_not_found
+run_case "config: no key in /secrets exits 1"                 case_config_missing_key_file
+run_case "config: key not named sa.json exits 1"              case_config_key_file_not_found
 run_case "config: file is not a key exits 1"                  case_config_key_file_not_a_key
 run_case "config: legacy HMAC keys exit 1"                    case_config_legacy_keys_are_rejected
 run_case "config: legacy keys explain the deprecation"        case_config_legacy_keys_explain_the_deprecation

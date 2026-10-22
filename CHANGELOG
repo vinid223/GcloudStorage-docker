@@ -9,9 +9,10 @@ BREAKING CHANGES
   the image.
 - ACCESS_KEY, SECRET_KEY and BOTO_FILE are no longer supported. `gcloud storage` uses the JSON API
   and HMAC keys can only sign XML API requests, so they cannot be used at all. Authentication is now
-  a service account JSON key file mounted in the container and pointed at by SERVICE_ACCOUNT_FILE,
-  which is required. A container still using the removed variables stops at startup with migration
-  instructions. See "Migrating from 1.x" in the README.
+  a service account JSON key: mount the host directory holding it, with the key named sa.json, at
+  /secrets (`-v /path/on/host/secrets:/secrets:ro`). The key is always read from /secrets/sa.json,
+  so the mount is the only credential setting. A container still using the removed variables stops
+  at startup with migration instructions. See "Migrating from 1.x" in the README.
 - The bundled boto.config file is removed with them.
 - Symlinks: `gcloud storage rsync` ignores symlinks by default where gsutil followed them, so
   --no-ignore-symlinks is passed to keep the 1.x behaviour for file symlinks. One caveat: gsutil
