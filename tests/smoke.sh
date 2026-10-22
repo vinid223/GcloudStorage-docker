@@ -646,7 +646,11 @@ case_help_reports_the_effective_values() {
     expect_contains "$out" "now: true" "help output" || return 1
     expect_contains "$out" "now: 0" "help output" || return 1
     expect_contains "$out" "now: @daily" "help output" || return 1
-    # An unset optional setting says so rather than showing an empty line.
+}
+
+# An unset optional setting says so rather than showing an empty line.
+case_help_marks_unset_settings() {
+    out=$(in_image 'sh /opt/run.sh setup' -e GCSPATH=gs://bucket/)
     expect_contains "$out" "now: (not set)" "help output" || return 1
 }
 
@@ -836,6 +840,7 @@ run_case "help: shown when credentials are legacy"            case_help_shown_wh
 run_case "help: shown on a malformed schedule"                case_help_shown_on_a_bad_schedule
 run_case "help: shown on a successful start"                  case_help_shown_on_a_successful_start
 run_case "help: reports the effective values"                 case_help_reports_the_effective_values
+run_case "help: marks unset settings"                       case_help_marks_unset_settings
 run_case "help: shows the timezone actually applied"          case_help_shows_the_timezone_actually_applied
 run_case "help: shown for an unsupported option"              case_help_shown_for_an_unsupported_option
 run_case "help: not printed by a backup"                      case_help_not_printed_by_a_backup
