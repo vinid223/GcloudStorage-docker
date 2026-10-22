@@ -42,7 +42,7 @@ note() { printf '%s\n' "$*"; }
 in_image() {
     _script=$1
     shift
-    docker run --rm "$@" --entrypoint sh "$IMAGE" -c "$_script" 2>&1
+    docker run --rm --platform "$IMAGE_PLATFORM" "$@" --entrypoint sh "$IMAGE" -c "$_script" 2>&1
 }
 
 # The stub gcloud. Prints its argv into the log the way the real CLI's output
@@ -773,7 +773,14 @@ if [ -z "$IMAGE" ]; then
         exit 1
     }
 fi
-printf -- '--- testing %s ---\n\n' "$IMAGE"
+# Run the image as the platform it was built for. Without this, testing an
+# amd64 image on an arm64 host makes Docker print a platform-mismatch warning,
+# which in_image captures along with the probe output and breaks exact matches.
+IMAGE_PLATFORM=$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$IMAGE") || {
+    printf 'ERROR: image %s not found\n' "$IMAGE" >&2
+    exit 1
+}
+printf -- '--- testing %s (%s) ---\n\n' "$IMAGE" "$IMAGE_PLATFORM"
 
 printf -- '--- GCSOPTIONS translation ---\n'
 run_case "translation: no options"                            case_translation_default
