@@ -29,13 +29,11 @@ concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
 
-# Only repo read is needed here. Pushing to the Forgejo container registry does
-# NOT go through this token: Forgejo's automatic GITHUB_TOKEN cannot authenticate
-# against the package registry at all (it fails with `unauthorized:
-# reqPackageAccess` regardless of `packages: write` — see forgejo/forgejo#3571).
-# The registry login below uses a Personal Access Token instead.
-permissions:
-  contents: read
+# No `permissions:` block: Forgejo ignores it (capabilities are granted through
+# Authorized Integrations instead). Pushing to the Forgejo container registry
+# does NOT go through the automatic token anyway: it cannot authenticate against
+# the package registry at all (`unauthorized: reqPackageAccess` — see
+# forgejo/forgejo#3571), so the registry login below uses a Personal Access Token.
 
 env:
   REGISTRY: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}

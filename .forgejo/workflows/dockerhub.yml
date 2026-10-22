@@ -26,11 +26,10 @@ concurrency:
   group: dockerhub-publish
   cancel-in-progress: false
 
-# `contents: write` is what lets the release steps create the git tag and the
-# release through the Forgejo API. (Unlike the package registry, the repo API
-# does accept the automatic per-run token.)
-permissions:
-  contents: write
+# The release steps create the git tag and the release through the Forgejo API
+# with the automatic per-run token, which already has repo write on this repo
+# (unlike the package registry, the repo API accepts it). No `permissions:`
+# block: Forgejo ignores it and uses Authorized Integrations instead.
 
 env:
   REGISTRY: ${{ vars.REGISTRY || 'forge.vinid223.ca' }}

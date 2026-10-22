@@ -159,9 +159,11 @@ warning and a “No changes.” body. “Previous version” here is the same hi
 tag the version calculation used — not `/releases/latest` — so tags that predate
 Forgejo releases are handled correctly.
 
-The tag and release calls go through the Forgejo (Gitea-compatible) API, which
-is why the workflow declares `permissions: contents: write`. The automatic run
-token is enough for this — only the *package registry* rejects it (see below).
+The tag and release calls go through the Forgejo (Gitea-compatible) API using
+the automatic run token, which has repo write by default — only the *package
+registry* rejects it (see below). The workflows declare no `permissions:` block:
+Forgejo ignores that field and grants extra capabilities through Authorized
+Integrations instead.
 Set the optional `RELEASE_TOKEN` secret (a PAT with repo write) only if your
 instance forbids run tokens from creating tags/releases.
 
@@ -192,7 +194,7 @@ two concurrent ones would race on the version number.
   - `PLATFORMS` (defaults to `linux/amd64`) — architectures to publish. See
     [Publishing arm64](#publishing-arm64) before widening it.
 
-> **Why not `GITHUB_TOKEN`?** Forgejo's automatic per-run token **cannot** authenticate against the package registry — `docker login`/`docker push` fails with `unauthorized: reqPackageAccess` no matter what `permissions:` the workflow declares ([forgejo/forgejo#3571](https://codeberg.org/forgejo/forgejo/issues/3571), [#6904](https://codeberg.org/forgejo/forgejo/issues/6904)). A PAT is the supported workaround until that feature lands.
+> **Why not `GITHUB_TOKEN`?** Forgejo's automatic per-run token **cannot** authenticate against the package registry — `docker login`/`docker push` fails with `unauthorized: reqPackageAccess` whatever the job is granted ([forgejo/forgejo#3571](https://codeberg.org/forgejo/forgejo/issues/3571), [#6904](https://codeberg.org/forgejo/forgejo/issues/6904)). A PAT is the supported workaround until that feature lands.
 
 ## Optimizations & conventions
 - **Concurrency:** a newer push to a ref cancels the in-progress run (tags are unique, so releases are never cancelled).
