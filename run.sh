@@ -172,11 +172,11 @@ print_help()
    works: the key file is used directly
 
  REMOVED IN 2.0
- ACCESS_KEY, SECRET_KEY, BOTO_FILE. Google is retiring
- gsutil (removed from the Cloud CLI after March 2027);
- its replacement, 'gcloud storage', cannot use HMAC keys,
- so auth is now the key mounted at /secrets. See
- "Migrating from 1.x" in the README.
+ ACCESS_KEY, SECRET_KEY, BOTO_FILE. Google is
+ retiring gsutil, removing it from the Cloud CLI after
+ March 2027. Its replacement, 'gcloud storage', cannot use
+ HMAC keys, so auth is now the key mounted at /secrets.
+ See "Migrating from 1.x" in the README.
 ------------------------------------------------------------
 HELP
 }
