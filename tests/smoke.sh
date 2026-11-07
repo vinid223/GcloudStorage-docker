@@ -608,7 +608,7 @@ case_help_accepts_flag_spellings() {
 # says what it was looking for.
 case_help_shown_when_configuration_is_missing() {
     out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' -e GCSPATH=)
-    expect_contains "$out" "SETTINGS" "setup output" || return 1
+    expect_contains "$out" "gcloud-storage-docker settings" "setup output" || return 1
     expect_contains "$out" "GCSPATH required" "setup output" || return 1
     expect_contains "$out" "__STATUS__:1" "setup output" || return 1
 }
@@ -616,7 +616,7 @@ case_help_shown_when_configuration_is_missing() {
 case_help_shown_when_credentials_are_legacy() {
     out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' \
         -e GCSPATH=gs://bucket/ -e ACCESS_KEY=k -e SECRET_KEY=s)
-    expect_contains "$out" "SETTINGS" "setup output" || return 1
+    expect_contains "$out" "gcloud-storage-docker settings" "setup output" || return 1
     expect_contains "$out" "no longer supported as of version 2.0" "setup output" || return 1
     expect_contains "$out" "__STATUS__:1" "setup output" || return 1
 }
@@ -624,14 +624,17 @@ case_help_shown_when_credentials_are_legacy() {
 case_help_shown_on_a_bad_schedule() {
     out=$(in_image 'sh /opt/run.sh setup; echo "__STATUS__:$?"' \
         -e GCSPATH=gs://bucket/ -e CRON_SCHEDULE="0 3 * *")
-    expect_contains "$out" "SETTINGS" "setup output" || return 1
+    expect_contains "$out" "gcloud-storage-docker settings" "setup output" || return 1
     expect_contains "$out" "CRON_SCHEDULE must have 5 fields" "setup output" || return 1
 }
 
 case_help_shown_on_a_successful_start() {
     out=$(setup_dry 'true' -e CRON_SCHEDULE="*/17 * * * *")
-    expect_contains "$out" "SETTINGS" "setup output" || return 1
+    expect_contains "$out" "gcloud-storage-docker settings" "setup output" || return 1
     expect_contains "$out" "SETUP_DONE" "setup output" || return 1
+    # Only the short summary at startup: the full reference is what made the
+    # start of the log get cut off in log viewers.
+    expect_not_contains "$out" "GCSOPTIONS VALUES" "setup output" || return 1
 }
 
 case_help_reports_the_effective_values() {
@@ -639,19 +642,19 @@ case_help_reports_the_effective_values() {
         -e GCSPATH=gs://real-bucket/sub/ -e TZ=America/Montreal \
         -e GCSOPTIONS=-d -e PROJECT_ID=my-proj -e RUN_ON_STARTUP=true \
         -e LOG_MAX_BYTES=0 -e CRON_SCHEDULE=@daily)
-    expect_contains "$out" "now: gs://real-bucket/sub/" "help output" || return 1
-    expect_contains "$out" "now: America/Montreal" "help output" || return 1
-    expect_contains "$out" "now: -d" "help output" || return 1
-    expect_contains "$out" "now: my-proj" "help output" || return 1
-    expect_contains "$out" "now: true" "help output" || return 1
-    expect_contains "$out" "now: 0" "help output" || return 1
-    expect_contains "$out" "now: @daily" "help output" || return 1
+    expect_contains "$out" "GCSPATH         gs://real-bucket/sub/" "help output" || return 1
+    expect_contains "$out" "TZ              America/Montreal" "help output" || return 1
+    expect_contains "$out" "GCSOPTIONS      -d" "help output" || return 1
+    expect_contains "$out" "PROJECT_ID      my-proj" "help output" || return 1
+    expect_contains "$out" "RUN_ON_STARTUP  true" "help output" || return 1
+    expect_contains "$out" "LOG_MAX_BYTES   0" "help output" || return 1
+    expect_contains "$out" "CRON_SCHEDULE   @daily" "summary" || return 1
 }
 
 # An unset optional setting says so rather than showing an empty line.
 case_help_marks_unset_settings() {
     out=$(in_image 'sh /opt/run.sh setup' -e GCSPATH=gs://bucket/)
-    expect_contains "$out" "now: (not set)" "help output" || return 1
+    expect_contains "$out" "PROJECT_ID      (not set)" "help output" || return 1
 }
 
 # A rejected timezone falls back to UTC, so the menu must show UTC and not the
@@ -659,13 +662,13 @@ case_help_marks_unset_settings() {
 case_help_shows_the_timezone_actually_applied() {
     out=$(in_image 'sh /opt/run.sh setup' -e GCSPATH=gs://bucket/ -e TZ=Mars/Olympus_Mons)
     expect_contains "$out" "Unknown timezone" "setup output" || return 1
-    expect_contains "$out" "now: UTC" "help output" || return 1
+    expect_contains "$out" "TZ              UTC" "help output" || return 1
 }
 
 case_help_shown_for_an_unsupported_option() {
     out=$(in_image 'sh /opt/run.sh frobnicate; echo "__STATUS__:$?"')
     expect_contains "$out" "Unsupported option: frobnicate" "output" || return 1
-    expect_contains "$out" "SETTINGS" "output" || return 1
+    expect_contains "$out" "Commands: setup (default), backup, healthcheck, help" "output" || return 1
     expect_contains "$out" "__STATUS__:1" "output" || return 1
 }
 
@@ -673,7 +676,7 @@ case_help_shown_for_an_unsupported_option() {
 # menu in the log each time would bury the transfer output.
 case_help_not_printed_by_a_backup() {
     out=$(backup_argv "")
-    expect_not_contains "$out" "SETTINGS" "cron.log" || return 1
+    expect_not_contains "$out" "gcloud-storage-docker settings" "cron.log" || return 1
     expect_not_contains "$out" "GCSOPTIONS VALUES" "cron.log" || return 1
     expect_contains "$out" "ARGV: storage rsync" "cron.log" || return 1
 }

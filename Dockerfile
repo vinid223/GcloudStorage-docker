@@ -22,7 +22,7 @@ ENV PATH="/google-cloud-sdk/bin:$PATH" \
 
 # Version of the Google Cloud CLI to install. Pinned (rather than the floating
 # "latest" tarball) so image builds stay reproducible.
-ARG GCLOUD_VERSION=577.0.0
+ARG GCLOUD_VERSION=590.0.0
 # Populated automatically by BuildKit; the default keeps the legacy builder
 # working. Google names the ARM 64-bit tarball "linux-arm".
 ARG TARGETARCH=amd64
@@ -37,8 +37,8 @@ ARG TARGETARCH=amd64
 #     curl -fsSL -O "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-$V-linux-$a.tar.gz"
 #     sha256sum "google-cloud-cli-$V-linux-$a.tar.gz"
 #   done
-ARG GCLOUD_SHA256_AMD64=0b32d330446ce7b0f57f253e7efab4636c18fb1f87a3ac31c6c3f2a2a697525e
-ARG GCLOUD_SHA256_ARM64=dbac26bdf80d72b5d13538e3a215dcbfe2781edfd2d69723effbeef3839cffb8
+ARG GCLOUD_SHA256_AMD64=1503a6fcda689d1e1013a421e2c85850e7f58382c0be7064877b5e1a1038bc64
+ARG GCLOUD_SHA256_ARM64=547c5c28ae449a862339edbe73e4254073b33072a364463f581adebf894c5cfa
 
 # Download, verify, install and clean up the Google Cloud CLI in a single layer.
 # curl uses -fSL --retry so a slow/flaky runner network fails loudly instead

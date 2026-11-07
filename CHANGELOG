@@ -22,7 +22,7 @@ BREAKING CHANGES
 Other changes
 
 - Updated the alpine base image from 3.18 to 3.24
-- Updated the Google Cloud CLI from 396.0.0 to 577.0.0
+- Updated the Google Cloud CLI from 396.0.0 to 590.0.0
 - The Google Cloud CLI version and the target architecture (amd64 / arm64) are now build arguments
 - Added timezone support through the TZ environment variable (defaults to UTC). TZ was previously
   ignored: if you already set it, the CRON_SCHEDULE now runs in that timezone instead of UTC
@@ -36,12 +36,11 @@ Other changes
 
 Usability
 
-- Every container now prints a settings menu at startup, before any validation, so
-  a container that refuses to start still shows what it accepts. It lists each
-  variable with its accepted values, its default and the value that container
-  actually resolved, plus the GCSOPTIONS values and the available commands. Also
-  available on demand (`docker run --rm <image> help`) and printed, with the
-  error, for an unsupported command. Scheduled backups do not repeat it
+- Every container now prints a short settings summary at startup, before any
+  validation, so a container that refuses to start still shows the value it
+  resolved for each setting. The full reference (accepted values, defaults, the
+  GCSOPTIONS values and the available commands) is available on demand with
+  `docker run --rm <image> help`. Scheduled backups print neither
 
 Reliability
 

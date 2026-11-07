@@ -9,7 +9,7 @@
 #                 `docker exec <container> sh /opt/run.sh backup`
 #   healthcheck - report whether the last completed backup succeeded. Used by the
 #                 image HEALTHCHECK; exits 1 once a backup has failed.
-#   help        - print the settings reference and exit.
+#   help        - print the full settings reference and exit.
 #
 # Plain POSIX shell on purpose: the image has no bash, only busybox ash.
 
@@ -95,111 +95,89 @@ or_unset()
     fi
 }
 
-# Every setting, its accepted values, and what this container resolved it to.
-# Printed at each start before anything can fail, so the log of a container that
-# refused to start still says what it was looking for. Not printed by `backup`,
-# which would repeat it into the log on every scheduled run.
+# The values this container resolved, one line each. Printed at each start
+# before anything can fail, so the log of a container that refused to start
+# still says what it was looking for - and kept short so it is not cut off by
+# log viewers that only show the last lines. Not printed by `backup`, which
+# would repeat it into the log on every scheduled run.
+print_summary()
+{
+    cat <<SUMMARY
+------------------------------------------------------------
+ gcloud-storage-docker settings ('help' lists them all)
+------------------------------------------------------------
+ KEY FILE        $KEY_FILE $(key_file_state)
+ GCSPATH         $(or_unset "$GCSPATH")
+ CRON_SCHEDULE   $CRON_SCHEDULE
+ TZ              $TZ
+ GCSOPTIONS      $(or_unset "$GCSOPTIONS")
+ PROJECT_ID      $(or_unset "$PROJECT_ID")
+ RUN_ON_STARTUP  $RUN_ON_STARTUP
+ LOG_MAX_BYTES   $LOG_MAX_BYTES
+------------------------------------------------------------
+SUMMARY
+}
+
+# The full reference: every setting, its accepted values and its default.
+# Only printed on request, so it never crowds the container log.
 print_help()
 {
+    print_summary
     cat <<HELP
-======================================================================
- gcloud-storage-docker - backs up /data to Google Cloud Storage
-======================================================================
- Mount the directories to back up under /data, and a host directory
- holding the service account JSON key, named sa.json, at /secrets.
+ Backs up /data to Google Cloud Storage.
 
  MOUNTS
+ /data      REQUIRED  directories to back up, mounted under it
+            ex: -v /home/user/Documents:/data/documents
+ /secrets   REQUIRED  directory holding sa.json, a service
+            account JSON key (read from $KEY_FILE)
+            ex: -v /path/on/host/secrets:/secrets:ro
 
- /data                 REQUIRED
-   One or more directories to back up, mounted under it.
-   ex: -v /home/user/Documents:/data/documents
+ SETTINGS
+ GCSPATH         REQUIRED  bucket, optional path inside it
+                 ex: gs://my-bucket/  gs://my-bucket/host/
+ CRON_SCHEDULE   default: 0 * * * *  (hourly)
+                 5 cron fields or @hourly @daily @weekly
+                 @monthly @yearly, evaluated in TZ
+ TZ              default: UTC   zoneinfo name, ex:
+                 America/Montreal (unknown names use UTC)
+ GCSOPTIONS      default: none  extra transfer flags, below
+ PROJECT_ID      default: none  only if the bucket needs it
+ RUN_ON_STARTUP  default: false true/1/yes/on: back up as
+                 soon as the container starts
+ LOG_MAX_BYTES   default: 10485760 (10 MB)  trim the log to
+                 its newest half past this size, 0 = never
 
- /secrets              REQUIRED
-   A directory containing sa.json, a service account JSON key. The
-   key is always read from $KEY_FILE. Read-only is recommended.
-   ex: -v /path/on/host/secrets:/secrets:ro
-   now: $KEY_FILE $(key_file_state)
-
- SETTINGS                            "now:" is the value in use here
-
- GCSPATH               REQUIRED
-   Destination bucket, with an optional path inside it.
-   ex: gs://my-backup-bucket/  or  gs://my-backup-bucket/hostname/
-   now: $(or_unset "$GCSPATH")
-
- CRON_SCHEDULE         default: 0 * * * *   (hourly, at minute 0)
-   Five cron fields, or an @macro: @hourly @daily @weekly @monthly
-   @yearly. Evaluated in TZ.  ex: 0 3 * * *  is 03:00 every day.
-   now: $CRON_SCHEDULE
-
- TZ                    default: UTC
-   Any zoneinfo name, and it applies to both the schedule and the log
-   timestamps.  ex: America/Montreal.  Unknown names fall back to UTC.
-   now: $TZ
-
- GCSOPTIONS            default: (none)
-   Extra flags for the transfer. Values are listed below.
-   now: $(or_unset "$GCSOPTIONS")
-
- PROJECT_ID            default: (none)
-   GCP project, needed only if your bucket requires one to be set.
-   now: $(or_unset "$PROJECT_ID")
-
- RUN_ON_STARTUP        default: false
-   true, 1, yes or on - run one backup as soon as the container starts
-   instead of waiting for the first scheduled run.
-   now: $RUN_ON_STARTUP
-
- LOG_MAX_BYTES         default: 10485760   (10 MB)
-   Trim the log to its most recent half once it grows past this many
-   bytes.  0 keeps it forever.
-   now: $LOG_MAX_BYTES
-
- GCSOPTIONS VALUES              the 1.x gsutil short forms still work
-
-   -d    --delete-unmatched-destination-objects
-                          also delete bucket objects that no longer
-                          exist under /data
-   -n    --dry-run        report what would happen, transfer nothing
-   -C    --continue-on-error
-                          carry on after an individual file fails
-   -x P  --exclude P      skip paths matching the regular expression P
-   -e    --ignore-symlinks
-                          do not follow symlinks (default: follow)
-   -r -R -m               accepted and ignored: the transfer is
-                          already recursive and parallel
-
-   Anything else is handed to 'gcloud storage rsync' unchanged, so any
-   of its flags can be used directly. Quote a value containing a
-   space:   GCSOPTIONS="-x 'my notes'"
+ GCSOPTIONS VALUES  (1.x gsutil short forms still work)
+ -d    delete bucket objects no longer under /data
+ -n    dry run: report, transfer nothing
+ -C    continue after an individual file fails
+ -x P  exclude paths matching the regex P
+ -e    do not follow symlinks (default: follow)
+ -r -R -m  accepted and ignored
+ Anything else goes to 'gcloud storage rsync' unchanged.
+ Quote values with spaces:  GCSOPTIONS="-x 'my notes'"
 
  COMMANDS
+ setup        validate, schedule, run cron (default)
+ backup       one backup now, non-zero exit on failure:
+              docker exec <container> sh /opt/run.sh backup
+ healthcheck  report the last backup's outcome
+ help         print this and exit
 
-   setup         validate, install the schedule, run cron  (default)
-   backup        run one backup now, outside the schedule:
-                   docker exec <container> sh /opt/run.sh backup
-                 exits non-zero if the backup failed
-   healthcheck   report the last backup's outcome
-   help          print this and exit
-
- ALSO WORTH KNOWING
-
-   /var/log/cron.log   the backup log, also streamed to the container's
-                       stdout, so 'docker logs -f' follows it
-   docker ps           reports 'unhealthy' once a backup has failed
-   gcloud auth list    says "no credentialed accounts" even when auth
-                       works: the key file is used directly
+ NOTES
+ - /var/log/cron.log is streamed to 'docker logs -f'
+ - 'docker ps' shows unhealthy once a backup has failed
+ - 'gcloud auth list' shows no accounts even when auth
+   works: the key file is used directly
 
  REMOVED IN 2.0
-
-   ACCESS_KEY, SECRET_KEY and BOTO_FILE. Google is retiring gsutil,
-   the tool 1.x transferred files with, and removes it from the Cloud
-   CLI after March 2027; backups now use its replacement, 'gcloud
-   storage'. That tool talks to the JSON API, which HMAC keys cannot
-   sign, so authentication moved to a service account key mounted at
-   /secrets. Setting any of the three prints full migration
-   instructions. See "Migrating from 1.x" in the README.
-======================================================================
+ ACCESS_KEY, SECRET_KEY, BOTO_FILE. Google is retiring
+ gsutil (removed from the Cloud CLI after March 2027);
+ its replacement, 'gcloud storage', cannot use HMAC keys,
+ so auth is now the key mounted at /secrets. See
+ "Migrating from 1.x" in the README.
+------------------------------------------------------------
 HELP
 }
 
@@ -476,12 +454,11 @@ echo "A backup utility to GCP Bucket"
 setup_timezone
 
 # At container start, before any validation, so a container that goes on to
-# refuse to start still leaves the settings reference - and the values it
-# actually resolved - in its log. TZ is applied first so the value shown is the
-# one in effect. Left out of `backup`, which would otherwise repeat the whole
-# menu into the log on every scheduled run.
+# refuse to start still leaves the values it actually resolved in its log. TZ is
+# applied first so the value shown is the one in effect. Left out of `backup`,
+# which would otherwise repeat it into the log on every scheduled run.
 if [ "$OPTION" = "setup" ]; then
-  print_help
+  print_summary
 fi
 
 check_removed_credentials
@@ -653,7 +630,6 @@ elif [ "$OPTION" = "backup" ]; then
 else
   log_info "Unsupported option: $OPTION"
   echo "Unsupported option: $OPTION"
-  echo ""
-  print_help
+  echo "Commands: setup (default), backup, healthcheck, help"
   exit 1
 fi

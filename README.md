@@ -53,13 +53,14 @@ container stops at startup with migration instructions. See [Migrating from 1.x]
 
 ## The settings menu
 
-Every container prints a settings reference when it starts — before it validates
-anything, so a container that refuses to start still shows what it was looking
-for. It lists every variable, its accepted values and its default, plus the value
-that container actually resolved (`now:`), the `GCSOPTIONS` values, and the
-commands. It is the first thing in `docker logs`.
+Every container prints a short summary of its settings when it starts — before it
+validates anything, so a container that refuses to start still shows what it was
+looking for. It is one line per setting, showing the value that container actually
+resolved, and is the first thing in `docker logs`.
 
-To read it without starting anything:
+The full reference — every variable with its accepted values and default, the
+`GCSOPTIONS` values and the commands — is printed only on request.
+To read the full reference without starting anything:
 
 ```
 docker run --rm vinid223/gcloud-storage-backup help
